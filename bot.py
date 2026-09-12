@@ -44,6 +44,27 @@ def schedule_turn_timer(game: GameRoom):
     cancel_timer(game)
     game.active_timer_task = asyncio.create_task(run_turn_timer(game.chat_id))
 
+async def run_lobby_inactivity_timer(chat_id: int):
+    try:
+        await asyncio.sleep(180)  # 3 minutes
+        async with get_game_lock(chat_id):
+            game = GAMES.get(chat_id)
+            if not game or game.status != "LOBBY":
+                return
+
+            host_tag = f"<a href='tg://user?id={game.host_id}'>{game.host_name}</a>"
+            del GAMES[chat_id]
+            await bot.send_message(
+                chat_id,
+                f"⌛ <b>Lobby Expired!</b>\n"
+                f"{host_tag} dwara banayi gayi lobby 3 minute me start na hone ki wajah se cancel kar di gayi hai.\n"
+                f"Naya game shuru karne ke liye /start ya /deck run karein."
+            )
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logging.error(f"Lobby timer error in chat {chat_id}: {e}", exc_info=True)
+
 async def check_and_announce_host(game: GameRoom):
     old_host_id = game.host_id
     new_h = game.reassign_host_if_needed()
@@ -192,12 +213,27 @@ async def handle_31_call(game: GameRoom, player: Player):
     database.update_stat(player.user_id, player.name, "rounds_survived")
 
     tag = f"<a href='tg://user?id={player.user_id}'>{player.name}</a>"
-    await bot.send_message(
-        game.chat_id,
-        f"⚡ <b>PERFECT SCORE 31!</b>\n"
-        f"{tag} reached 31! Automatic Call.\n"
-        f"All other active players lose 1 life!"
-    )
+
+    lines = [
+        "⚡ <b>PERFECT SCORE 31!</b>\n",
+        f"🎉 {tag} completed <b>31 Points</b>! Automatic Call.\n",
+        "🎴 <b>ALL PLAYERS CARDS REVEAL:</b>"
+    ]
+
+    scores = []
+    for p in game.active_players:
+        sc = calculate_hand_score(p.cards)
+        scores.append((p, sc))
+
+    scores.sort(key=lambda x: x[1], reverse=True)
+
+    for p, sc in scores:
+        c_str = " ".join(f"[{c.suit.value} {c.rank}]" for c in p.cards)
+        crown = " 👑 (31 PTS)" if p.user_id == player.user_id else ""
+        lines.append(f"• <b>{p.name}</b>: <code>{c_str}</code> ➔ <b>{format_score(sc)} pts</b>{crown}")
+
+    lines.append("\n💔 <i>All other active players lose 1 life!</i>")
+
     for p in game.active_players:
         if p.user_id != player.user_id:
             p.lives -= 1
@@ -206,8 +242,9 @@ async def handle_31_call(game: GameRoom, player: Player):
     if not game.first_life_lost:
         game.first_life_lost = True
         game.joining_open = False
-        await bot.send_message(game.chat_id, "🔒 <b>Joining is now permanently closed</b> (first life lost).")
+        lines.append("🔒 <b>Joining is now permanently closed</b> (first life lost).")
 
+    await bot.send_message(game.chat_id, "\n".join(lines))
     await finalize_round_eliminations(game)
 
 async def resolve_round(game: GameRoom):
@@ -457,6 +494,7 @@ async def cmd_leave(message: Message):
                     game.host_name = next_h.name
                     await message.answer(f"👑 Naye host bane: <b>{next_h.name}</b>")
                 else:
+                    cancel_timer(game)
                     del GAMES[chat_id]
                     await message.answer("🚪 Sabhi ke nikalne par lobby band ho gayi.")
             return
@@ -537,8 +575,18 @@ async def cmd_endgame(message: Message):
             return
 
         user_id = message.from_user.id
+
+        # FIX: Agar game sirf LOBBY stage me hai aur start nahi hua, toh koi bhi close kar sake
+        if game.status == "LOBBY":
+            cancel_timer(game)
+            del GAMES[chat_id]
+            h_tag = f"<a href='tg://user?id={game.host_id}'>{game.host_name}</a>"
+            await message.answer(f"🚪 <b>Lobby Closed!</b> {h_tag} dwara banayi gayi lobby close kar di gayi hai.")
+            return
+
+        # Ongoing match me active player restriction
         if user_id not in game.players or not game.players[user_id].is_active:
-            await message.reply("❌ Sirf game ke active players hi command use kar sakte hain.")
+            await message.reply("❌ Sirf game ke active players hi ongoing match ko end kar sakte hain.")
             return
 
         if user_id == game.host_id:
@@ -692,7 +740,23 @@ async def handle_hub(callback: CallbackQuery):
         chat_id = int(parts[2])
         async with get_game_lock(chat_id):
             if chat_id in GAMES and GAMES[chat_id].status != "ENDED":
-                await callback.message.reply("Ek game ya lobby pehle se active hai!")
+                active_game = GAMES[chat_id]
+                h_name = active_game.host_name or "Unknown"
+                h_tag = f"<a href='tg://user?id={active_game.host_id}'>{h_name}</a>"
+
+                if active_game.status == "LOBBY":
+                    await callback.message.reply(
+                        f"⚠️ <b>Lobby pehle se open hai!</b>\n"
+                        f"👑 <b>Host:</b> {h_tag}\n\n"
+                        f"Aap /join karke khel sakte hain, ya /endgame chala kar lobby band kar sakte hain.\n"
+                        f"<i>(Yeh lobby 3 min me auto-expire ho jayegi agar start nahi hui)</i>"
+                    )
+                else:
+                    await callback.message.reply(
+                        f"⚠️ <b>Match pehle se chal raha hai!</b>\n"
+                        f"👑 <b>Host:</b> {h_tag}\n\n"
+                        f"Ongoing game ko end karne ke liye /endgame vote karein."
+                    )
                 return
 
             room = GameRoom(
@@ -707,6 +771,10 @@ async def handle_hub(callback: CallbackQuery):
             )
             room.players[host.user_id] = host
             GAMES[chat_id] = room
+
+            # 3-minute lobby auto-expiry timer schedule
+            cancel_timer(room)
+            room.active_timer_task = asyncio.create_task(run_lobby_inactivity_timer(chat_id))
 
             await callback.message.edit_text(
                 turn_ui.render_lobby_view(room),
@@ -765,6 +833,7 @@ async def handle_lobby(callback: CallbackQuery):
                     room.host_id = next_h.user_id
                     room.host_name = next_h.name
                 else:
+                    cancel_timer(room)
                     del GAMES[chat_id]
                     await callback.message.edit_text("🚪 Lobby closed as all players left.")
                     return
@@ -780,6 +849,9 @@ async def handle_lobby(callback: CallbackQuery):
             if len(room.players) < config.MIN_PLAYERS:
                 await bot.send_message(chat_id, f"❌ Kam se kam {config.MIN_PLAYERS} players hone chahiye start karne ke liye.")
                 return
+
+            # Lobby auto-expiry timer cancel karo
+            cancel_timer(room)
 
             room.status = "IN_PROGRESS"
             start_new_round(room)
