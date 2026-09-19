@@ -26,104 +26,212 @@ STAT_KEYS_DISPLAY = [
     ("lives_lost", "💀 Lives Lost")
 ]
 
-class StatEditStates(StatesGroup):
-    waiting_for_single_value = State()
-    waiting_for_wizard_value = State()
+class StatWizardStates(StatesGroup):
+    waiting_for_step = State()
     waiting_for_announcement = State()
 
-async def resolve_target_user(bot: Bot, message: Message, command_args: str) -> Optional[Tuple[int, str, str]]:
+async def resolve_target_user(bot: Bot, message: Message, command_text: str) -> Optional[Tuple[int, str, str]]:
+    # 1. Reply to Message Check
     if message.reply_to_message and message.reply_to_message.from_user:
         u = message.reply_to_message.from_user
         username = f"@{u.username}" if u.username else "None"
         return u.id, u.full_name, username
 
-    arg = command_args.strip()
-    if not arg:
+    # 2. Text Parsing
+    parts = command_text.strip().split()
+    if len(parts) < 2:
         return None
 
-    if arg.isdigit() or (arg.startswith("-") and arg[1:].isdigit()):
-        uid = int(arg)
+    target_str = parts[1].strip()
+
+    # Numeric Telegram ID
+    if target_str.isdigit() or (target_str.startswith("-") and target_str[1:].isdigit()):
+        uid = int(target_str)
         stats = database.get_user_stats(uid)
         name = stats.get("name", "Unknown") if stats else "Unknown"
         return uid, name, "N/A"
 
-    if arg.startswith("@"):
-        conn = database.get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id, name FROM call31_stats WHERE LOWER(name) LIKE %s LIMIT 1;", (f"%{arg[1:].lower()}%",))
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
-        if row:
-            return row[0], row[1], arg
+    # Username handling
+    if target_str.startswith("@"):
+        try:
+            chat = await bot.get_chat(target_str)
+            return chat.id, chat.full_name, target_str
+        except Exception:
+            conn = database.get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT user_id, name FROM call31_stats WHERE LOWER(name) LIKE %s LIMIT 1;", 
+                (f"%{target_str[1:].lower()}%",)
+            )
+            row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            if row:
+                return row[0], row[1], target_str
+
     return None
 
-def build_setstats_markup(target_id: int, admin_id: int) -> InlineKeyboardMarkup:
-    buttons = [
-        [
-            InlineKeyboardButton(text="🎮 Games", callback_data=f"adm_s:games:{target_id}:{admin_id}"),
-            InlineKeyboardButton(text="🏆 Wins", callback_data=f"adm_s:wins:{target_id}:{admin_id}")
-        ],
-        [
-            InlineKeyboardButton(text="🤝 Joint Wins", callback_data=f"adm_s:joint_wins:{target_id}:{admin_id}"),
-            InlineKeyboardButton(text="❤️ Survived", callback_data=f"adm_s:rounds_survived:{target_id}:{admin_id}")
-        ],
-        [
-            InlineKeyboardButton(text="🎯 Exact 31", callback_data=f"adm_s:exact_31:{target_id}:{admin_id}"),
-            InlineKeyboardButton(text="⭐ 30.5", callback_data=f"adm_s:exact_30_5:{target_id}:{admin_id}")
-        ],
-        [
-            InlineKeyboardButton(text="🔥 Best Streak", callback_data=f"adm_s:best_streak:{target_id}:{admin_id}"),
-            InlineKeyboardButton(text="🔄 Exchanges", callback_data=f"adm_s:ex_1:{target_id}:{admin_id}")
-        ],
-        [
-            InlineKeyboardButton(text="⏭️ Passes", callback_data=f"adm_s:passes:{target_id}:{admin_id}"),
-            InlineKeyboardButton(text="💀 Lives Lost", callback_data=f"adm_s:lives_lost:{target_id}:{admin_id}")
-        ],
-        [
-            InlineKeyboardButton(text="✏️ Set All Stats", callback_data=f"adm_w_start:{target_id}:{admin_id}")
-        ],
-        [
-            InlineKeyboardButton(text="🔄 Reset All Stats", callback_data=f"adm_rst_ask:{target_id}:{admin_id}")
-        ],
-        [
-            InlineKeyboardButton(text="❌ Cancel", callback_data=f"adm_cancel:{admin_id}")
-        ]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+# ━━━━━━━━━━━━━━━━━━━━
+# 1. STEP-BY-STEP SETSTATS FLOW
+# ━━━━━━━━━━━━━━━━━━━━
 
-def render_setstats_panel(user_id: int, name: str, username: str, stats: dict) -> str:
-    return (
-        "⚙️ <b>SET PLAYER STATS</b>\n"
+@admin_router.message(Command("setstats"))
+async def cmd_setstats(message: Message, bot: Bot, state: FSMContext):
+    if not database.is_owner(message.from_user.id):
+        await message.reply("⛔ <b>Bot owner only.</b>")
+        return
+
+    target = await resolve_target_user(bot, message, message.text)
+    if not target:
+        await message.reply("⚠️ Usage: <code>/setstats &lt;user_id/@username&gt;</code> or reply to a player.")
+        return
+
+    uid, name, uname = target
+    stats = database.get_user_stats(uid)
+    if not stats:
+        await message.reply(f"❌ Player <b>{name}</b> (<code>{uid}</code>) has no existing records in Call 31 database.")
+        return
+
+    # Initialize Wizard State
+    await state.update_data(
+        target_id=uid,
+        admin_id=message.from_user.id,
+        name=name,
+        wizard_step=0,
+        original_stats=stats,
+        new_stats_collected={}
+    )
+    await state.set_state(StatWizardStates.waiting_for_step)
+
+    first_key, first_disp = STAT_KEYS_DISPLAY[0]
+    first_old_val = stats.get(first_key, 0)
+
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Abort Edit", callback_data=f"adm_cancel:{message.from_user.id}")]
+    ])
+
+    lines = [
+        "⚙️ <b>SET PLAYER STATS WIZARD</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "👤 <b>PLAYER</b>\n"
         f"• Name : <b>{name}</b>\n"
-        f"• User : {username}\n"
-        f"• ID   : <code>{user_id}</code>\n\n"
-        "🎴 <b>CALL 31 STATS</b>\n\n"
-        f"🎮 Games       : {stats.get('games', 0)}\n"
-        f"🏆 Wins        : {stats.get('wins', 0)}\n"
-        f"🤝 Joint Wins  : {stats.get('joint_wins', 0)}\n"
-        f"❤️ Survived    : {stats.get('rounds_survived', 0)}\n"
-        f"🎯 Exact 31    : {stats.get('exact_31', 0)}\n"
-        f"⭐ 30.5        : {stats.get('exact_30_5', 0)}\n"
-        f"🔥 Best Streak : {stats.get('best_streak', 0)}\n"
-        f"🔄 Exchanges   : {stats.get('ex_1', 0)}\n"
-        f"⏭️ Passes      : {stats.get('passes', 0)}\n"
-        f"💀 Lives Lost  : {stats.get('lives_lost', 0)}\n\n"
-        "<i>Select a stat to edit:</i>"
+        f"• User : {uname}\n"
+        f"• ID   : <code>{uid}</code>\n\n"
+        "🎴 <b>CURRENT STATS:</b>\n"
+    ]
+    for k, disp in STAT_KEYS_DISPLAY:
+        lines.append(f"• {disp:<15}: {stats.get(k, 0)}")
+
+    lines.append("\n━━━━━━━━━━━━━━━━━━━━")
+    lines.append("🔢 <b>STEP 1/10</b>\n")
+    lines.append(f"Stat: <b>{first_disp}</b>")
+    lines.append(f"Current Value: <b>{first_old_val}</b>\n")
+    lines.append("<i>Send the new integer value:</i>")
+
+    await message.reply("\n".join(lines), reply_markup=markup)
+
+@admin_router.message(StatWizardStates.waiting_for_step)
+async def process_wizard_step(message: Message, state: FSMContext):
+    data = await state.get_data()
+    if message.from_user.id != data.get("admin_id"):
+        return
+
+    if message.text and message.text.startswith("/cancel"):
+        await state.clear()
+        await message.reply("❌ Stat edit cancelled.")
+        return
+
+    val_text = message.text.strip()
+    if not val_text.isdigit():
+        await message.reply("❌ Invalid value. Enter a non-negative number (or send /cancel):")
+        return
+
+    val = int(val_text)
+    step = data["wizard_step"]
+    stat_key, _ = STAT_KEYS_DISPLAY[step]
+
+    collected = data["new_stats_collected"]
+    collected[stat_key] = val
+
+    next_step = step + 1
+
+    if next_step < len(STAT_KEYS_DISPLAY):
+        await state.update_data(wizard_step=next_step, new_stats_collected=collected)
+        next_k, next_disp = STAT_KEYS_DISPLAY[next_step]
+        orig_v = data["original_stats"].get(next_k, 0)
+
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Abort Edit", callback_data=f"adm_cancel:{data['admin_id']}")]
+        ])
+
+        await message.reply(
+            f"🔢 <b>STEP {next_step + 1}/10</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"Stat: <b>{next_disp}</b>\n"
+            f"Current Value: <b>{orig_v}</b>\n\n"
+            "<i>Send the new integer value:</i>",
+            reply_markup=markup
+        )
+    else:
+        # All 10 collected: preview for final confirmation
+        await state.update_data(new_stats_collected=collected)
+        orig = data["original_stats"]
+
+        lines = [
+            "⚠️ <b>CONFIRM ALL STAT CHANGES</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 Player : <b>{data['name']}</b>\n"
+            f"🆔 ID     : <code>{data['target_id']}</code>\n\n"
+        ]
+        for sk, sdisp in STAT_KEYS_DISPLAY:
+            lines.append(f"• {sdisp:<15}: {orig.get(sk, 0)} ➔ <b>{collected[sk]}</b>")
+
+        lines.append("\n━━━━━━━━━━━━━━━━━━━━")
+        lines.append("<i>Apply these changes permanently?</i>")
+
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ APPLY CHANGES", callback_data=f"adm_w_apply:{data['admin_id']}"),
+                InlineKeyboardButton(text="❌ CANCEL", callback_data=f"adm_cancel:{data['admin_id']}")
+            ]
+        ])
+        await message.reply("\n".join(lines), reply_markup=markup)
+
+@admin_router.callback_query(F.data.startswith("adm_w_apply:"))
+async def cb_wizard_apply(callback: CallbackQuery, state: FSMContext):
+    admin_id = int(callback.data.split(":")[1])
+    if callback.from_user.id != admin_id or not database.is_owner(callback.from_user.id):
+        await callback.answer("🔒 Unauthorized.", show_alert=True)
+        return
+
+    data = await state.get_data()
+    database.set_player_all_stats(data["target_id"], data["new_stats_collected"])
+    database.log_admin_action(
+        callback.from_user.id, callback.from_user.full_name,
+        "SET_ALL_STATS", f"{data['name']} ({data['target_id']})",
+        "ALL_FIELDS", "UPDATED_10_FIELDS"
     )
+    await state.clear()
+
+    await callback.message.edit_text(
+        "✅ <b>ALL STATS UPDATED</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 Player : <b>{data['name']}</b>\n\n"
+        "All 10 Call 31 statistics have been committed to Neon database."
+    )
+    await callback.answer()
 
 # ━━━━━━━━━━━━━━━━━━━━
-# 1. OWNER ONLY COMMANDS
+# 2. OWNER COMMANDS
 # ━━━━━━━━━━━━━━━━━━━━
 
 @admin_router.message(Command("addadmin"))
 async def cmd_addadmin(message: Message, bot: Bot):
     if not database.is_owner(message.from_user.id):
+        await message.reply("⛔ <b>Bot owner only.</b>")
         return
 
-    target = await resolve_target_user(bot, message, message.text.replace("/addadmin", ""))
+    target = await resolve_target_user(bot, message, message.text)
     if not target:
         await message.reply("⚠️ Usage: <code>/addadmin &lt;user_id/@username&gt;</code> or reply to a message.")
         return
@@ -142,9 +250,10 @@ async def cmd_addadmin(message: Message, bot: Bot):
 @admin_router.message(Command("removeadmin"))
 async def cmd_removeadmin(message: Message, bot: Bot):
     if not database.is_owner(message.from_user.id):
+        await message.reply("⛔ <b>Bot owner only.</b>")
         return
 
-    target = await resolve_target_user(bot, message, message.text.replace("/removeadmin", ""))
+    target = await resolve_target_user(bot, message, message.text)
     if not target:
         await message.reply("⚠️ Usage: <code>/removeadmin &lt;user_id/@username&gt;</code> or reply to a message.")
         return
@@ -164,6 +273,7 @@ async def cmd_removeadmin(message: Message, bot: Bot):
 @admin_router.message(Command("admins"))
 async def cmd_admins(message: Message):
     if not database.is_owner(message.from_user.id):
+        await message.reply("⛔ <b>Bot owner only.</b>")
         return
 
     admins = database.get_all_admins()
@@ -183,6 +293,7 @@ async def cmd_admins(message: Message):
 @admin_router.message(Command("maintenance"))
 async def cmd_maintenance(message: Message):
     if not database.is_owner(message.from_user.id):
+        await message.reply("⛔ <b>Bot owner only.</b>")
         return
 
     status = database.get_maintenance_status()
@@ -230,32 +341,13 @@ async def cb_maintenance_toggle(callback: CallbackQuery):
         )
     await callback.answer()
 
-@admin_router.message(Command("setstats"))
-async def cmd_setstats(message: Message, bot: Bot):
-    if not database.is_owner(message.from_user.id):
-        return
-
-    target = await resolve_target_user(bot, message, message.text.replace("/setstats", ""))
-    if not target:
-        await message.reply("⚠️ Usage: <code>/setstats &lt;user_id/@username&gt;</code> or reply to a player's message.")
-        return
-
-    uid, name, uname = target
-    stats = database.get_user_stats(uid)
-    if not stats:
-        await message.reply("❌ Player has no existing Call 31 records in the database.")
-        return
-
-    text = render_setstats_panel(uid, name, uname, stats)
-    markup = build_setstats_markup(uid, message.from_user.id)
-    await message.reply(text, reply_markup=markup)
-
 @admin_router.message(Command("resetstats"))
 async def cmd_resetstats(message: Message, bot: Bot):
     if not database.is_owner(message.from_user.id):
+        await message.reply("⛔ <b>Bot owner only.</b>")
         return
 
-    target = await resolve_target_user(bot, message, message.text.replace("/resetstats", ""))
+    target = await resolve_target_user(bot, message, message.text)
     if not target:
         await message.reply("⚠️ Usage: <code>/resetstats &lt;user_id/@username&gt;</code> or reply to a message.")
         return
@@ -273,33 +365,6 @@ async def cmd_resetstats(message: Message, bot: Bot):
         f"👤 Player : <b>{name}</b>\n"
         f"🆔 ID     : <code>{uid}</code>\n\n"
         "This will reset the player's Call 31 statistics. Account will remain active.",
-        reply_markup=markup
-    )
-
-@admin_router.callback_query(F.data.startswith("adm_rst_ask:"))
-async def cb_reset_ask(callback: CallbackQuery):
-    parts = callback.data.split(":")
-    target_id = int(parts[1])
-    admin_id = int(parts[2])
-
-    if callback.from_user.id != admin_id or not database.is_owner(callback.from_user.id):
-        await callback.answer("🔒 Unauthorized.", show_alert=True)
-        return
-
-    stats = database.get_user_stats(target_id)
-    name = stats.get("name", "Player") if stats else "Player"
-    markup = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="⚠️ RESET STATS", callback_data=f"adm_rst_do:{target_id}:{admin_id}"),
-            InlineKeyboardButton(text="❌ CANCEL", callback_data=f"adm_cancel:{admin_id}")
-        ]
-    ])
-    await callback.message.edit_text(
-        "⚠️ <b>RESET PLAYER STATS</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"👤 Player : <b>{name}</b>\n"
-        f"🆔 ID     : <code>{target_id}</code>\n\n"
-        "This will reset the player's Call 31 statistics.",
         reply_markup=markup
     )
 
@@ -327,245 +392,7 @@ async def cb_reset_perform(callback: CallbackQuery):
     await callback.answer()
 
 # ━━━━━━━━━━━━━━━━━━━━
-# 2. INDIVIDUAL STAT EDIT
-# ━━━━━━━━━━━━━━━━━━━━
-
-@admin_router.callback_query(F.data.startswith("adm_s:"))
-async def cb_edit_single_stat(callback: CallbackQuery, state: FSMContext):
-    parts = callback.data.split(":")
-    stat_key = parts[1]
-    target_id = int(parts[2])
-    admin_id = int(parts[3])
-
-    if callback.from_user.id != admin_id or not database.is_owner(callback.from_user.id):
-        await callback.answer("🔒 Unauthorized.", show_alert=True)
-        return
-
-    stats = database.get_user_stats(target_id)
-    if not stats:
-        await callback.answer("Player record not found.", show_alert=True)
-        return
-
-    stat_name = dict(STAT_KEYS_DISPLAY).get(stat_key, stat_key)
-    curr_val = stats.get(stat_key, 0)
-
-    await state.update_data(
-        target_id=target_id,
-        admin_id=admin_id,
-        stat_key=stat_key,
-        stat_name=stat_name,
-        curr_val=curr_val,
-        name=stats.get("name", "Player")
-    )
-    await state.set_state(StatEditStates.waiting_for_single_value)
-
-    markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Cancel", callback_data=f"adm_cancel:{admin_id}")]
-    ])
-
-    await callback.message.edit_text(
-        "✏️ <b>EDIT STAT</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"👤 Player : <b>{stats.get('name', 'Player')}</b>\n\n"
-        f"<b>{stat_name}</b>\n"
-        f"Current Value: <b>{curr_val}</b>\n\n"
-        "Send the new value:\n",
-        reply_markup=markup
-    )
-    await callback.answer()
-
-@admin_router.message(StatEditStates.waiting_for_single_value)
-async def process_single_stat_input(message: Message, state: FSMContext):
-    data = await state.get_data()
-    if message.from_user.id != data.get("admin_id"):
-        return
-
-    val_text = message.text.strip()
-    if not val_text.isdigit():
-        await message.reply("❌ Invalid value. Please enter a valid non-negative number.")
-        return
-
-    new_val = int(val_text)
-    await state.update_data(new_val=new_val)
-
-    markup = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Confirm", callback_data=f"adm_single_confirm:{data['admin_id']}"),
-            InlineKeyboardButton(text="❌ Cancel", callback_data=f"adm_cancel:{data['admin_id']}")
-        ]
-    ])
-
-    await message.reply(
-        "⚠️ <b>CONFIRM STAT CHANGE</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"👤 Player : <b>{data['name']}</b>\n\n"
-        f"<b>{data['stat_name']}</b>\n"
-        f"<b>{data['curr_val']}</b> → <b>{new_val}</b>",
-        reply_markup=markup
-    )
-
-@admin_router.callback_query(F.data.startswith("adm_single_confirm:"))
-async def cb_confirm_single_stat(callback: CallbackQuery, state: FSMContext):
-    admin_id = int(callback.data.split(":")[1])
-    if callback.from_user.id != admin_id or not database.is_owner(callback.from_user.id):
-        await callback.answer("🔒 Unauthorized.", show_alert=True)
-        return
-
-    data = await state.get_data()
-    database.set_player_single_stat(data["target_id"], data["stat_key"], data["new_val"])
-    database.log_admin_action(
-        callback.from_user.id, callback.from_user.full_name,
-        "SET_STAT", f"{data['name']} ({data['target_id']})",
-        f"{data['stat_key']}:{data['curr_val']}", f"{data['stat_key']}:{data['new_val']}"
-    )
-    await state.clear()
-
-    stats = database.get_user_stats(data["target_id"])
-    text = render_setstats_panel(data["target_id"], data["name"], "N/A", stats)
-    markup = build_setstats_markup(data["target_id"], admin_id)
-
-    await callback.message.edit_text(
-        "✅ <b>STAT UPDATED</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"👤 Player : <b>{data['name']}</b>\n\n"
-        f"<b>{data['stat_name']}</b>\n"
-        f"<b>{data['curr_val']}</b> → <b>{data['new_val']}</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n" + text,
-        reply_markup=markup
-    )
-    await callback.answer()
-
-# ━━━━━━━━━━━━━━━━━━━━
-# 3. SET ALL STATS (WIZARD)
-# ━━━━━━━━━━━━━━━━━━━━
-
-@admin_router.callback_query(F.data.startswith("adm_w_start:"))
-async def cb_wizard_start(callback: CallbackQuery, state: FSMContext):
-    parts = callback.data.split(":")
-    target_id = int(parts[1])
-    admin_id = int(parts[2])
-
-    if callback.from_user.id != admin_id or not database.is_owner(callback.from_user.id):
-        await callback.answer("🔒 Unauthorized.", show_alert=True)
-        return
-
-    stats = database.get_user_stats(target_id)
-    if not stats:
-        await callback.answer("Player record not found.", show_alert=True)
-        return
-
-    await state.update_data(
-        target_id=target_id,
-        admin_id=admin_id,
-        name=stats.get("name", "Player"),
-        wizard_step=0,
-        original_stats=stats,
-        new_stats_collected={}
-    )
-    await state.set_state(StatEditStates.waiting_for_wizard_value)
-
-    k, disp = STAT_KEYS_DISPLAY[0]
-    curr_v = stats.get(k, 0)
-
-    markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Cancel", callback_data=f"adm_cancel:{admin_id}")]
-    ])
-
-    await callback.message.edit_text(
-        "🎮 <b>SET ALL STATS</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"👤 Player : <b>{stats.get('name', 'Player')}</b>\n\n"
-        "Step 1/10\n\n"
-        f"<b>{disp}</b>\n"
-        f"Current: <b>{curr_v}</b>\n\n"
-        "Send new value:",
-        reply_markup=markup
-    )
-    await callback.answer()
-
-@admin_router.message(StatEditStates.waiting_for_wizard_value)
-async def process_wizard_step(message: Message, state: FSMContext):
-    data = await state.get_data()
-    if message.from_user.id != data.get("admin_id"):
-        return
-
-    val_text = message.text.strip()
-    if not val_text.isdigit():
-        await message.reply("❌ Invalid value. Send a non-negative number.")
-        return
-
-    val = int(val_text)
-    step = data["wizard_step"]
-    stat_key, _ = STAT_KEYS_DISPLAY[step]
-
-    collected = data["new_stats_collected"]
-    collected[stat_key] = val
-
-    next_step = step + 1
-    if next_step < len(STAT_KEYS_DISPLAY):
-        await state.update_data(wizard_step=next_step, new_stats_collected=collected)
-        next_k, next_disp = STAT_KEYS_DISPLAY[next_step]
-        orig_v = data["original_stats"].get(next_k, 0)
-
-        markup = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Cancel", callback_data=f"adm_cancel:{data['admin_id']}")]
-        ])
-        await message.reply(
-            "🎮 <b>SET ALL STATS</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"👤 Player : <b>{data['name']}</b>\n\n"
-            f"Step {next_step + 1}/10\n\n"
-            f"<b>{next_disp}</b>\n"
-            f"Current: <b>{orig_v}</b>\n\n"
-            "Send new value:",
-            reply_markup=markup
-        )
-    else:
-        await state.update_data(new_stats_collected=collected)
-        orig = data["original_stats"]
-
-        lines = [
-            "⚠️ <b>CONFIRM ALL STAT CHANGES</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"👤 Player : <b>{data['name']}</b>\n"
-        ]
-        for sk, sdisp in STAT_KEYS_DISPLAY:
-            lines.append(f"• {sdisp:<15} : {orig.get(sk, 0)} → <b>{collected[sk]}</b>")
-
-        markup = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ APPLY CHANGES", callback_data=f"adm_w_apply:{data['admin_id']}"),
-                InlineKeyboardButton(text="❌ CANCEL", callback_data=f"adm_cancel:{data['admin_id']}")
-            ]
-        ])
-        await message.reply("\n".join(lines), reply_markup=markup)
-
-@admin_router.callback_query(F.data.startswith("adm_w_apply:"))
-async def cb_wizard_apply(callback: CallbackQuery, state: FSMContext):
-    admin_id = int(callback.data.split(":")[1])
-    if callback.from_user.id != admin_id or not database.is_owner(callback.from_user.id):
-        await callback.answer("🔒 Unauthorized.", show_alert=True)
-        return
-
-    data = await state.get_data()
-    database.set_player_all_stats(data["target_id"], data["new_stats_collected"])
-    database.log_admin_action(
-        callback.from_user.id, callback.from_user.full_name,
-        "SET_ALL_STATS", f"{data['name']} ({data['target_id']})",
-        "ALL_FIELDS", "UPDATED_10_FIELDS"
-    )
-    await state.clear()
-
-    await callback.message.edit_text(
-        "✅ <b>ALL STATS UPDATED</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"👤 Player : <b>{data['name']}</b>\n\n"
-        "All 10 Call 31 statistics have been committed to the database."
-    )
-    await callback.answer()
-
-# ━━━━━━━━━━━━━━━━━━━━
-# 4. OWNER + ADMIN COMMANDS
+# 3. OWNER + ADMIN COMMANDS
 # ━━━━━━━━━━━━━━━━━━━━
 
 @admin_router.message(Command("playerinfo"))
@@ -573,7 +400,7 @@ async def cmd_playerinfo(message: Message, bot: Bot):
     if not database.is_admin(message.from_user.id):
         return
 
-    target = await resolve_target_user(bot, message, message.text.replace("/playerinfo", ""))
+    target = await resolve_target_user(bot, message, message.text)
     if not target:
         await message.reply("⚠️ Usage: <code>/playerinfo &lt;user_id/@username&gt;</code> or reply to a player.")
         return
@@ -755,7 +582,7 @@ async def cmd_announce(message: Message, state: FSMContext):
     if not database.is_admin(message.from_user.id):
         return
 
-    await state.set_state(StatEditStates.waiting_for_announcement)
+    await state.set_state(StatWizardStates.waiting_for_announcement)
     await state.update_data(admin_id=message.from_user.id)
     await message.reply(
         "📢 <b>ANNOUNCEMENT</b>\n"
@@ -764,7 +591,7 @@ async def cmd_announce(message: Message, state: FSMContext):
         "<i>Use /cancel to abort.</i>"
     )
 
-@admin_router.message(StatEditStates.waiting_for_announcement)
+@admin_router.message(StatWizardStates.waiting_for_announcement)
 async def process_announcement_text(message: Message, state: FSMContext):
     data = await state.get_data()
     if message.from_user.id != data.get("admin_id"):
@@ -972,7 +799,6 @@ async def cb_noop(callback: CallbackQuery):
 async def cmd_adminhelp(message: Message):
     user_id = message.from_user.id
     
-    # Normal user protection
     if not database.is_admin(user_id):
         return
 
@@ -986,7 +812,7 @@ async def cmd_adminhelp(message: Message):
     if is_owner_user:
         lines.extend([
             "👑 <b>OWNER PRIVILEGES</b>\n"
-            "• <code>/setstats &lt;user&gt;</code> — Interactive Call 31 stats editor\n"
+            "• <code>/setstats &lt;user&gt;</code> — Step-by-step 10 Call 31 stats editor\n"
             "• <code>/resetstats &lt;user&gt;</code> — Reset player's Call 31 records\n"
             "• <code>/addadmin &lt;user&gt;</code> — Grant operational admin access\n"
             "• <code>/removeadmin &lt;user&gt;</code> — Revoke admin privileges\n"

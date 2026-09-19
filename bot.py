@@ -1190,7 +1190,7 @@ async def start_dummy_server():
 # --- ENTRY POINT ---
 
 async def main():
-    print("Deck Games Bot is starting...")
+    print("DECK PLAY is starting...")
 
     commands = [
         BotCommand(command="start", description="Start / Launch a game"),
@@ -1205,6 +1205,22 @@ async def main():
         BotCommand(command="help", description="Show commands help")
     ]
     await bot.set_my_commands(commands)
+
+    # Startup Online Notification to Owner
+    try:
+        startup_msg = (
+            "🤖 <b>BOT ONLINE</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🎴 <b>DECK PLAY</b>\n\n"
+            "Status: 🟢 Online\n"
+            "Database: 🟢 Connected\n"
+            "⏱️ Uptime: 0m\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🟢 Bot Online"
+        )
+        await bot.send_message(config.OWNER_ID, startup_msg)
+    except Exception as e:
+        logging.error(f"Startup notice error: {e}")
 
     await start_dummy_server()
     await bot.delete_webhook(drop_pending_updates=True)
