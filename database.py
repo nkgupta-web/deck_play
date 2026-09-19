@@ -22,9 +22,17 @@ def init_db():
             ex_all INTEGER DEFAULT 0,
             calls INTEGER DEFAULT 0,
             passes INTEGER DEFAULT 0,
-            lives_lost INTEGER DEFAULT 0
+            lives_lost INTEGER DEFAULT 0,
+            joint_wins INTEGER DEFAULT 0
         )
     """)
+
+    # Safe column migration agar table pehle se exist karti ho
+    cursor.execute("PRAGMA table_info(call31_stats)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if "joint_wins" not in columns:
+        cursor.execute("ALTER TABLE call31_stats ADD COLUMN joint_wins INTEGER DEFAULT 0")
+
     conn.commit()
     conn.close()
 
@@ -70,6 +78,24 @@ def record_game_finish(winner_id: int, winner_name: str, participants: List[Tupl
     conn.commit()
     conn.close()
 
+def record_joint_finish(winner_ids: List[int], participants: List[Tuple[int, str]]):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    for u_id, name in participants:
+        cursor.execute("""
+            INSERT INTO call31_stats (user_id, name)
+            VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET name = excluded.name
+        """, (u_id, name))
+        cursor.execute("UPDATE call31_stats SET games = games + 1 WHERE user_id = ?", (u_id,))
+        
+        if u_id in winner_ids:
+            cursor.execute("UPDATE call31_stats SET joint_wins = joint_wins + 1 WHERE user_id = ?", (u_id,))
+        cursor.execute("UPDATE call31_stats SET current_streak = 0 WHERE user_id = ?", (u_id,))
+            
+    conn.commit()
+    conn.close()
+
 def get_user_stats(user_id: int) -> Optional[Dict[str, Any]]:
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
@@ -83,7 +109,7 @@ def get_leaderboard(limit: int = 10) -> List[Dict[str, Any]]:
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM call31_stats ORDER BY wins DESC, games ASC LIMIT ?", (limit,))
+    cursor.execute("SELECT * FROM call31_stats ORDER BY wins DESC, joint_wins DESC, games ASC LIMIT ?", (limit,))
     rows = cursor.fetchall()
     conn.close()
     return [dict(r) for r in rows]

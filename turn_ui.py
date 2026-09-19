@@ -14,7 +14,7 @@ def get_lobby_markup(chat_id: int, bot_username: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🚪 Leave", callback_data=f"lobby:leave:{chat_id}")
         ],
         [
-            InlineKeyboardButton(text="📩 Activate Cards (Open DM)", url=f"https://t.me/{bot_username}?start=join")
+            InlineKeyboardButton(text="📩 Enable Bot DM", url=f"https://t.me/{bot_username}?start=join")
         ],
         [
             InlineKeyboardButton(text="▶️ Start Game (Host)", callback_data=f"lobby:start:{chat_id}")
@@ -38,7 +38,7 @@ def render_lobby_view(game: GameRoom) -> str:
 
 def get_group_turn_markup(bot_username: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎮 Click here to play", url=f"https://t.me/{bot_username}")]
+        [InlineKeyboardButton(text="🎮 Open Hand in DM", url=f"https://t.me/{bot_username}")]
     ])
 
 def render_group_turn_view(game: GameRoom, last_action_text: Optional[str] = None) -> str:
@@ -82,7 +82,7 @@ def render_group_turn_view(game: GameRoom, last_action_text: Optional[str] = Non
 
     text_parts.extend([
         "─────────────────────────",
-        f"These cards are on the table:\n{table_str}",
+        f"Cards on the table:\n{table_str}",
         "─────────────────────────",
         f"It is {curr_tag}'s turn now. ⏳ {config.TURN_TIME_SECONDS}s",
         "\n<b>LIVES:</b>\n" + "\n".join(lives_lines)
@@ -92,9 +92,9 @@ def render_group_turn_view(game: GameRoom, last_action_text: Optional[str] = Non
 def render_dm_cards_header(cards: List[Card], table_cards: List[Card]) -> str:
     score = calculate_hand_score(cards)
     return (
-        "These cards are on the table:\n"
+        "Cards on the table:\n"
         f"<code>{format_cards_row(table_cards)}</code>\n\n"
-        "You have these cards in hand:\n"
+        "Your hand:\n"
         f"<code>{format_cards_row(cards)}</code>\n\n"
         f"Current score: <b>{format_score(score)}</b>\n"
         "─────────────────────────\n"
@@ -105,37 +105,35 @@ def render_dm_hand_view(cards: List[Card], table_cards: List[Card]) -> str:
     return (
         f"{header}"
         f"⏳ <i>Turn timer: {config.TURN_TIME_SECONDS}s</i>\n"
-        "What would you like to do?"
+        "Choose your action:"
     )
 
 def render_move_locked_in(cards: List[Card], action_summary: str) -> str:
     score = calculate_hand_score(cards)
     return (
         f"✅ <b>{action_summary}</b>\n"
-        "Watch the group for the next turn.\n\n"
+        "Return to the group for the next turn.\n\n"
         "🃏 <b>Your latest hand:</b>\n"
         f"<code>{format_cards_row(cards)}</code>\n\n"
         f"Current score: <b>{format_score(score)}</b>"
     )
 
 def get_dm_turn_buttons(chat_id: int, is_call_locked: bool = False, has_31: bool = False) -> InlineKeyboardMarkup:
-    # Check agar call pehle se ho chuka hai
     if is_call_locked:
-        call_btn = InlineKeyboardButton(text="🔒 Call Lock", callback_data=f"turn:call_locked:{chat_id}")
+        call_btn = InlineKeyboardButton(text="🔒 Call Locked", callback_data=f"turn:call_locked:{chat_id}")
     else:
         call_btn = InlineKeyboardButton(text="⚡ Call Hand", callback_data=f"turn:call_confirm:{chat_id}")
 
-    # Agar starting me hi 31 points mil gaye hon, toh card exchange lock kar do
     if has_31:
         return InlineKeyboardMarkup(inline_keyboard=[
             [call_btn],
-            [InlineKeyboardButton(text="⏭️ Skip / Pass", callback_data=f"turn:pass_confirm:{chat_id}")]
+            [InlineKeyboardButton(text="⏭️ Pass / Skip", callback_data=f"turn:pass_confirm:{chat_id}")]
         ])
 
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Exchange 1 Card", callback_data=f"turn:ex1:{chat_id}")],
         [InlineKeyboardButton(text="🔁 Exchange All", callback_data=f"turn:exall_confirm:{chat_id}")],
-        [InlineKeyboardButton(text="⏭️ Skip / Pass", callback_data=f"turn:pass_confirm:{chat_id}")],
+        [InlineKeyboardButton(text="⏭️ Pass / Skip", callback_data=f"turn:pass_confirm:{chat_id}")]
         [call_btn]
     ])
 
@@ -169,7 +167,7 @@ def get_action_confirmation_markup(chat_id: int, action: str) -> InlineKeyboardM
 
 def get_back_to_group_markup(group_link: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="↗️ Back to group", url=group_link)]
+        [InlineKeyboardButton(text="↗️ Back to Group", url=group_link)]
     ])
 
 # --- MULTI-GAME HUB SELECTION MARKUPS & TEMPLATES ---
@@ -207,45 +205,46 @@ def render_call31_rules() -> str:
         "📖 <b>CALL 31 — RULES & SCORING</b>\n"
         "─────────────────────────\n"
         "🎯 <b>Objective:</b>\n"
-        "Apne hand ke 3 cards ka maximum score banayein (Max: 31). Sabse kam score wale ki 1 life ❤️ kat ti hai!\n\n"
+        "Build the highest hand value of 3 cards (Max: 31). The player with the lowest score loses 1 life ❤️!\n\n"
         "🃏 <b>Scoring System:</b>\n"
-        "• Ek hi suit (♠️/♥️/♦️/♣️) ke cards add hote hain.\n"
+        "• Cards of the same suit (♠️/♥️/♦️/♣️) are summed together.\n"
         "• Ace (A) = 11 pts\n"
         "• Face Cards (K, Q, J, 10) = 10 pts\n"
-        "• 2 to 9 = Face value\n"
-        "• <b>3 of a Kind:</b> Teeno cards same rank ke hone par fixed <b>30.5 pts</b> bante hain (chahe suit alag ho)!\n\n"
-        "🕹️ <b>Turn Options:</b>\n"
-        "• 🔄 <b>Exchange 1:</b> Hand ka 1 card table ke 1 card se swap karein.\n"
-        "• 🔁 <b>Exchange All:</b> Hand ke teeno cards table se swap karein.\n"
-        "• ⏭️ <b>Skip / Pass:</b> Kuch swap na karein (3 lagatar pass par table cards refresh ho jate hain).\n"
-        "• ⚡ <b>Call Hand:</b> Knock karein! Aapke cards lock ho jayenge aur baaki active players ko 1 final turn milegi.\n\n"
-        "❤️ <b>Elimination:</b> Har player 3 lives ke sath shuru karta hai. 0 lives = OUT!"
+        "• Numbers 2 to 9 = Face value\n"
+        "• <b>Three of a Kind:</b> 3 cards of identical rank score a fixed <b>30.5 pts</b> regardless of suits!\n\n"
+        "🕹️ <b>Turn Actions:</b>\n"
+        "• 🔄 <b>Exchange 1:</b> Swap 1 hand card with 1 table card.\n"
+        "• 🔁 <b>Exchange All:</b> Swap your entire hand with all 3 table cards.\n"
+        "• ⏭️ <b>Pass / Skip:</b> Make no move (3 consecutive passes refresh table cards).\n"
+        "• ⚡ <b>Call Hand:</b> Knock! Locks your hand while every other player gets one final turn.\n\n"
+        "❤️ <b>Elimination:</b> Each player starts with 3 lives. 0 lives = OUT!"
     )
 
 def render_call31_profile(data: Optional[Dict[str, Any]], user_name: str) -> str:
     if not data or data.get("games", 0) == 0:
         return (
-            "🎴 <b>CALL 31 • YOUR STATS</b>\n\n"
+            "🎴 <b>CALL 31 • PLAYER PROFILE</b>\n\n"
             f"👤 <b>{user_name}</b>\n\n"
-            "<i>Abhi tak koi game nahi khela gaya hai!</i>"
+            "<i>No games played yet!</i>"
         )
 
     return (
-        "🎴 <b>CALL 31 • YOUR STATS</b>\n\n"
+        "🎴 <b>CALL 31 • PLAYER PROFILE</b>\n\n"
         f"👤 <b>{data.get('name', user_name)}</b>\n\n"
-        f"🎮 Total Games: <b>{data.get('games', 0)}</b>\n"
-        f"🏆 Total Wins: <b>{data.get('wins', 0)}</b>\n\n"
+        f"🎮 Games Played: <b>{data.get('games', 0)}</b>\n"
+        f"🏆 Wins: <b>{data.get('wins', 0)}</b>\n"
+        f"🤝 Joint Wins: <b>{data.get('joint_wins', 0)}</b>\n\n"
         f"🎯 Round Wins: <b>{data.get('round_wins', 0)}</b>\n"
         f"🛡️ Rounds Survived: <b>{data.get('rounds_survived', 0)}</b>\n\n"
         f"✨ Exact 31s: <b>{data.get('exact_31', 0)}</b>\n"
         f"⭐ Exact 30½: <b>{data.get('exact_30_5', 0)}</b>\n\n"
         f"🔥 Current Win Streak: <b>{data.get('current_streak', 0)}</b>\n"
         f"🏅 Best Win Streak: <b>{data.get('best_streak', 0)}</b>\n\n"
-        f"🔄 Exchange 1 Cards: <b>{data.get('ex_1', 0)}</b>\n"
-        f"🔄 Exchange All Cards: <b>{data.get('ex_all', 0)}</b>\n"
+        f"🔄 1-Card Exchanges: <b>{data.get('ex_1', 0)}</b>\n"
+        f"🔁 Full Hand Swaps: <b>{data.get('ex_all', 0)}</b>\n"
         f"⚡ Calls: <b>{data.get('calls', 0)}</b>\n"
-        f"⏭️ Pass: <b>{data.get('passes', 0)}</b>\n\n"
-        f"❤️ Lives Lost: <b>{data.get('lives_lost', 0)}</b>"
+        f"⏭️ Passes: <b>{data.get('passes', 0)}</b>\n\n"
+        f"💔 Lives Lost: <b>{data.get('lives_lost', 0)}</b>"
     )
 
 def render_call31_leaderboard(top_players: List[Dict[str, Any]], user_rank: int) -> str:
@@ -253,12 +252,16 @@ def render_call31_leaderboard(top_players: List[Dict[str, Any]], user_rank: int)
     medals = ["🥇", "🥈", "🥉"]
 
     if not top_players:
-        lines.append("<i>Leaderboard khali hai. Khelo aur jeeto!</i>\n")
+        lines.append("<i>Leaderboard is currently empty. Play to rank!</i>\n")
     else:
         for idx, p in enumerate(top_players, 1):
             badge = medals[idx - 1] if idx <= 3 else f"{idx}️⃣"
-            lines.append(f"{badge} <b>{p['name']}</b>\n   🏆 {p['wins']} Wins • 🎮 {p['games']} Games\n")
+            j_wins = p.get('joint_wins', 0)
+            lines.append(
+                f"{badge} <b>{p['name']}</b>\n"
+                f"   🏆 {p['wins']} Wins • 🤝 {j_wins} Joint • 🎮 {p['games']} Matches\n"
+            )
 
     lines.append("──────────────────────────────")
-    lines.append(f"Your position <b>#{user_rank}</b>")
+    lines.append(f"Your Position: <b>#{user_rank}</b>")
     return "\n".join(lines)
