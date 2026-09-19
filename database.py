@@ -98,21 +98,20 @@ def init_db():
 # IDENTIFIER SEARCH HELPER
 # ━━━━━━━━━━━━━━━━━━━━
 
-def sync_get_player_by_identifier(identifier: str) -> Optional[Dict[str, Any]]:
+def sync_get_player_by_identifier(identifier: str):
     clean_id = str(identifier).strip().lstrip("@")
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-    # 1. Agar numeric ID hai
+    # 1. Agar pura numeric ID hai
     if clean_id.isdigit():
         cursor.execute("SELECT * FROM call31_stats WHERE user_id = %s;", (int(clean_id),))
         row = cursor.fetchone()
-        if row:
-            cursor.close()
-            conn.close()
-            return dict(row)
+        cursor.close()
+        conn.close()
+        return dict(row) if row else None
 
-    # 2. Case-insensitive search on username ya name
+    # 2. Case-insensitive match on username OR name
     cursor.execute("""
         SELECT * FROM call31_stats 
         WHERE LOWER(COALESCE(username, '')) = LOWER(%s) 

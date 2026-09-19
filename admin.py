@@ -1,6 +1,6 @@
 import asyncio
 import math
-from typing import Optional, Tuple
+from typing import Optional
 from aiogram import Router, Bot, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -13,7 +13,7 @@ from game_state import GAMES
 
 admin_router = Router()
 
-# Profile me jo pure 14 stats hain wahi exact order
+# Profile me jo 14 stats hain unka display name aur key
 STAT_KEYS_DISPLAY = [
     ("games", "🎮 Games Played"),
     ("wins", "🏆 Wins"),
@@ -35,26 +35,64 @@ class StatWizardStates(StatesGroup):
     waiting_for_step = State()
     waiting_for_announcement = State()
 
-def resolve_target_player(message: Message) -> Optional[dict]:
+async def resolve_target_player(bot: Bot, message: Message) -> Optional[dict]:
     # 1. Reply to Message Check
     if message.reply_to_message and message.reply_to_message.from_user:
         target_uid = message.reply_to_message.from_user.id
-        return database.sync_get_player_by_identifier(str(target_uid))
+        u = message.reply_to_message.from_user
+        p = database.sync_get_player_by_identifier(str(target_uid))
+        if p and u.username and not p.get("username"):
+            conn = database.get_db_connection()
+            cur = conn.cursor()
+            cur.execute("UPDATE call31_stats SET username = %s WHERE user_id = %s;", (u.username, target_uid))
+            conn.commit()
+            cur.close()
+            conn.close()
+            p["username"] = u.username
+        return p
 
-    # 2. Command argument check (e.g. /setstats @Zenus_45 ya /setstats 6238480307)
+    # 2. Text Parsing
     parts = message.text.strip().split()
     if len(parts) >= 2:
-        target_identifier = parts[1]
-        return database.sync_get_player_by_identifier(target_identifier)
+        target_str = parts[1].strip()
+
+        # Pehle database se match karo (ID, username ya name)
+        p = database.sync_get_player_by_identifier(target_str)
+        if p:
+            return p
+
+        # Agar database me username NULL hone ki wajah se match na mila ho
+        clean_uname = target_str.lstrip("@")
+        try:
+            chat = await bot.get_chat(f"@{clean_uname}")
+            p = database.sync_get_player_by_identifier(str(chat.id))
+            if p:
+                conn = database.get_db_connection()
+                cur = conn.cursor()
+                cur.execute("UPDATE call31_stats SET username = %s WHERE user_id = %s;", (clean_uname, chat.id))
+                conn.commit()
+                cur.close()
+                conn.close()
+                p["username"] = clean_uname
+                return p
+        except Exception:
+            pass
 
     return None
+
+def format_stats_clean(stats_dict: dict) -> str:
+    lines = []
+    for k, disp in STAT_KEYS_DISPLAY:
+        val = stats_dict.get(k, 0)
+        lines.append(f"{disp} : {val}")
+    return "\n".join(lines)
 
 # ━━━━━━━━━━━━━━━━━━━━
 # 1. 14-STEP SETSTATS WIZARD
 # ━━━━━━━━━━━━━━━━━━━━
 
 @admin_router.message(Command("setstats"))
-async def cmd_setstats(message: Message, state: FSMContext):
+async def cmd_setstats(message: Message, bot: Bot, state: FSMContext):
     if not database.is_owner(message.from_user.id):
         await message.reply("⛔ <b>Bot owner only.</b>")
         return
@@ -64,7 +102,7 @@ async def cmd_setstats(message: Message, state: FSMContext):
         await message.reply("⚠️ Usage: <code>/setstats &lt;user_id/@username&gt;</code> or reply to a player.")
         return
 
-    player = resolve_target_player(message)
+    player = await resolve_target_player(bot, message)
     if not player:
         raw_id = parts[1] if len(parts) >= 2 else "Unknown"
         await message.reply(f"❌ Player <code>{raw_id}</code> database me nahi mila!")
@@ -74,7 +112,6 @@ async def cmd_setstats(message: Message, state: FSMContext):
     name = player.get("name", "Player")
     uname = f"@{player.get('username')}" if player.get("username") else "N/A"
 
-    # Wizard state initiate karo
     await state.update_data(
         target_id=uid,
         admin_id=message.from_user.id,
@@ -92,7 +129,9 @@ async def cmd_setstats(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="❌ Abort Edit", callback_data=f"adm_cancel:{message.from_user.id}")]
     ])
 
-    lines = [
+    stats_block = format_stats_clean(player)
+
+    text = (
         "⚙️ <b>SET PLAYER STATS WIZARD</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "👤 <b>PLAYER</b>\n"
@@ -100,17 +139,15 @@ async def cmd_setstats(message: Message, state: FSMContext):
         f"• User : {uname}\n"
         f"• ID   : <code>{uid}</code>\n\n"
         "🎴 <b>CURRENT STATS (14 FIELDS):</b>\n"
-    ]
-    for k, disp in STAT_KEYS_DISPLAY:
-        lines.append(f"• {disp:<22}: {player.get(k, 0)}")
+        f"{stats_block}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔢 <b>STEP 1/{len(STAT_KEYS_DISPLAY)}</b>\n\n"
+        f"Stat: <b>{first_disp}</b>\n"
+        f"Current Value: <b>{first_old_val}</b>\n\n"
+        "<i>Send the new integer value:</i>"
+    )
 
-    lines.append("\n━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"🔢 <b>STEP 1/{len(STAT_KEYS_DISPLAY)}</b>\n")
-    lines.append(f"Stat: <b>{first_disp}</b>")
-    lines.append(f"Current Value: <b>{first_old_val}</b>\n")
-    lines.append("<i>Send the new integer value:</i>")
-
-    await message.reply("\n".join(lines), reply_markup=markup)
+    await message.reply(text, reply_markup=markup)
 
 @admin_router.message(StatWizardStates.waiting_for_step)
 async def process_wizard_step(message: Message, state: FSMContext):
@@ -149,28 +186,21 @@ async def process_wizard_step(message: Message, state: FSMContext):
 
         await message.reply(
             f"🔢 <b>STEP {next_step + 1}/{total_steps}</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
             f"Stat: <b>{next_disp}</b>\n"
             f"Current Value: <b>{orig_v}</b>\n\n"
             "<i>Send the new integer value:</i>",
             reply_markup=markup
         )
     else:
-        # Pura 14 steps complete ho gaya -> ab review aur final confirm
         await state.update_data(new_stats_collected=collected)
         orig = data["original_stats"]
 
-        lines = [
-            "⚠️ <b>CONFIRM ALL 14 STAT CHANGES</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"👤 Player : <b>{data['name']}</b>\n"
-            f"🆔 ID     : <code>{data['target_id']}</code>\n\n"
-        ]
+        review_lines = []
         for sk, sdisp in STAT_KEYS_DISPLAY:
-            lines.append(f"• {sdisp:<22}: {orig.get(sk, 0)} ➔ <b>{collected[sk]}</b>")
+            review_lines.append(f"{sdisp} : {orig.get(sk, 0)} ➔ {collected[sk]}")
 
-        lines.append("\n━━━━━━━━━━━━━━━━━━━━")
-        lines.append("<i>Apply these changes permanently?</i>")
+        review_block = "\n".join(review_lines)
 
         markup = InlineKeyboardMarkup(inline_keyboard=[
             [
@@ -178,7 +208,17 @@ async def process_wizard_step(message: Message, state: FSMContext):
                 InlineKeyboardButton(text="❌ CANCEL", callback_data=f"adm_cancel:{data['admin_id']}")
             ]
         ])
-        await message.reply("\n".join(lines), reply_markup=markup)
+
+        await message.reply(
+            "⚠️ <b>CONFIRM ALL 14 STAT CHANGES</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 Player : <b>{data['name']}</b>\n"
+            f"🆔 ID     : <code>{data['target_id']}</code>\n\n"
+            f"{review_block}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "<i>Apply these changes permanently?</i>",
+            reply_markup=markup
+        )
 
 @admin_router.callback_query(F.data.startswith("adm_w_apply:"))
 async def cb_wizard_apply(callback: CallbackQuery, state: FSMContext):
@@ -205,7 +245,7 @@ async def cb_wizard_apply(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 # ━━━━━━━━━━━━━━━━━━━━
-# 2. OWNER COMMANDS
+# 2. OWNER PRIVILEGE COMMANDS
 # ━━━━━━━━━━━━━━━━━━━━
 
 @admin_router.message(Command("addadmin"))
@@ -214,7 +254,7 @@ async def cmd_addadmin(message: Message, bot: Bot):
         await message.reply("⛔ <b>Bot owner only.</b>")
         return
 
-    player = resolve_target_player(message)
+    player = await resolve_target_player(bot, message)
     if not player:
         await message.reply("⚠️ Usage: <code>/addadmin &lt;user_id/@username&gt;</code> or reply to a message.")
         return
@@ -239,7 +279,7 @@ async def cmd_removeadmin(message: Message, bot: Bot):
         await message.reply("⛔ <b>Bot owner only.</b>")
         return
 
-    player = resolve_target_player(message)
+    player = await resolve_target_player(bot, message)
     if not player:
         await message.reply("⚠️ Usage: <code>/removeadmin &lt;user_id/@username&gt;</code> or reply to a message.")
         return
@@ -333,7 +373,7 @@ async def cmd_resetstats(message: Message, bot: Bot):
         await message.reply("⛔ <b>Bot owner only.</b>")
         return
 
-    player = resolve_target_player(message)
+    player = await resolve_target_player(bot, message)
     if not player:
         await message.reply("⚠️ Usage: <code>/resetstats &lt;user_id/@username&gt;</code> or reply to a message.")
         return
@@ -380,7 +420,7 @@ async def cb_reset_perform(callback: CallbackQuery):
     await callback.answer()
 
 # ━━━━━━━━━━━━━━━━━━━━
-# 3. OWNER + ADMIN COMMANDS
+# 3. OWNER + ADMIN OPERATIONAL COMMANDS
 # ━━━━━━━━━━━━━━━━━━━━
 
 @admin_router.message(Command("playerinfo"))
@@ -388,7 +428,7 @@ async def cmd_playerinfo(message: Message, bot: Bot):
     if not database.is_admin(message.from_user.id):
         return
 
-    player = resolve_target_player(message)
+    player = await resolve_target_player(bot, message)
     if not player:
         await message.reply("⚠️ Usage: <code>/playerinfo &lt;user_id/@username&gt;</code> or reply to a player.")
         return
@@ -401,6 +441,8 @@ async def cmd_playerinfo(message: Message, bot: Bot):
     wins = player.get("wins", 0)
     wr = f"{(wins / games) * 100:.1f}%" if games > 0 else "0.0%"
 
+    stats_block = format_stats_clean(player)
+
     text = (
         "👤 <b>PLAYER INFORMATION</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -408,21 +450,8 @@ async def cmd_playerinfo(message: Message, bot: Bot):
         f"• Name   : {name}\n"
         f"• User   : {uname}\n"
         f"• ID     : <code>{uid}</code>\n\n"
-        "🎴 <b>CALL 31 STATS</b>\n\n"
-        f"• 🎮 Games Played     : {games}\n"
-        f"• 🏆 Wins             : {wins}\n"
-        f"• 🤝 Joint Wins       : {player.get('joint_wins', 0)}\n"
-        f"• 🎯 Round Wins       : {player.get('round_wins', 0)}\n"
-        f"• 🛡️ Rounds Survived  : {player.get('rounds_survived', 0)}\n"
-        f"• ✨ Exact 31s        : {player.get('exact_31', 0)}\n"
-        f"• ⭐ Exact 30½        : {player.get('exact_30_5', 0)}\n"
-        f"• 🔥 Current Streak   : {player.get('current_streak', 0)}\n"
-        f"• 🥇 Best Win Streak  : {player.get('best_streak', 0)}\n"
-        f"• 🔄 1-Card Exchanges : {player.get('ex_1', 0)}\n"
-        f"• 🔁 Full Hand Swaps  : {player.get('ex_all', 0)}\n"
-        f"• ⚡ Calls            : {player.get('calls', 0)}\n"
-        f"• ⏭️ Passes           : {player.get('passes', 0)}\n"
-        f"• 💔 Lives Lost       : {player.get('lives_lost', 0)}\n\n"
+        "🎴 <b>CALL 31 STATS</b>\n"
+        f"{stats_block}\n\n"
         "📊 <b>PERFORMANCE</b>\n"
         f"• Win Rate : <b>{wr}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━"
