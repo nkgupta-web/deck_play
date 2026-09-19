@@ -118,17 +118,24 @@ def render_move_locked_in(cards: List[Card], action_summary: str) -> str:
         f"Current score: <b>{format_score(score)}</b>"
     )
 
-def get_dm_turn_buttons(chat_id: int, is_call_locked: bool = False) -> InlineKeyboardMarkup:
+def get_dm_turn_buttons(chat_id: int, is_call_locked: bool = False, has_31: bool = False) -> InlineKeyboardMarkup:
     # Check agar call pehle se ho chuka hai
     if is_call_locked:
         call_btn = InlineKeyboardButton(text="🔒 Call Lock", callback_data=f"turn:call_locked:{chat_id}")
     else:
         call_btn = InlineKeyboardButton(text="⚡ Call Hand", callback_data=f"turn:call_confirm:{chat_id}")
 
+    # Agar starting me hi 31 points mil gaye hon, toh card exchange lock kar do
+    if has_31:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [call_btn],
+            [InlineKeyboardButton(text="⏭️ Skip / Pass", callback_data=f"turn:pass_confirm:{chat_id}")]
+        ])
+
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Exchange 1 Card", callback_data=f"turn:ex1:{chat_id}")],
         [InlineKeyboardButton(text="🔁 Exchange All", callback_data=f"turn:exall_confirm:{chat_id}")],
-        [InlineKeyboardButton(text="⏭️ Skip / Pass", callback_data=f"turn:pass:{chat_id}")],
+        [InlineKeyboardButton(text="⏭️ Skip / Pass", callback_data=f"turn:pass_confirm:{chat_id}")],
         [call_btn]
     ])
 

@@ -140,7 +140,12 @@ async def send_player_turn(game: GameRoom, player: Player):
     text = turn_ui.render_dm_hand_view(player.cards, game.table_cards)
 
     call_locked = (game.caller_id is not None)
-    markup = turn_ui.get_dm_turn_buttons(game.chat_id, is_call_locked=call_locked)
+    has_31 = (calculate_hand_score(player.cards) == 31.0)
+
+    if has_31:
+        text += "\n\n⚡ <b>PERFECT SCORE 31!</b>\nExchange lock ho chuka hai. <b>CALL</b> ya <b>PASS</b> dabakar round declare karein."
+
+    markup = turn_ui.get_dm_turn_buttons(game.chat_id, is_call_locked=call_locked, has_31=has_31)
 
     try:
         await bot.send_message(player.user_id, text, reply_markup=markup)
@@ -329,15 +334,37 @@ async def end_game(game: GameRoom):
 
     if len(game.active_players) == 1:
         winner = game.active_players[0]
-        tag = f"<a href='tg://user?id={winner.user_id}'>{winner.name}</a>"
+        tag = f"<a href='tg://user?id={winner.user_id}'><b>{winner.name}</b></a>"
         database.record_game_finish(winner.user_id, winner.name, participants)
-        await bot.send_message(
-            game.chat_id,
-            f"🏆 <b>GAME OVER</b>\n\nWinner: {tag} with {winner.lives} ❤️ remaining!"
+
+        c_str = " ".join(f"[{c.suit.value} {c.rank}]" for c in winner.cards) if winner.cards else "N/A"
+        final_sc = format_score(calculate_hand_score(winner.cards)) if winner.cards else "31"
+
+        winner_banner = (
+            "👑 ═══════════════════════ 👑\n"
+            "         🏆 <b>VICTORY DECLARED!</b> 🏆\n"
+            "👑 ═══════════════════════ 👑\n\n"
+            f"🥇 <b>CHAMPION:</b> {tag}\n\n"
+            f"❤️ <b>Remaining Lives:</b> {'❤️' * winner.lives} ({winner.lives})\n"
+            f"🎴 <b>Winning Hand:</b> <code>{c_str}</code> (<b>{final_sc} pts</b>)\n"
+            f"⚔️ <b>Total Rounds:</b> {game.round_number}\n"
+            f"👥 <b>Total Contenders:</b> {len(participants)}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "✨ <i>Leaderboard par stats record ho chuke hain!</i>\n"
+            "🎮 <i>Naya game start karne ke liye /start ya /deck chalayein.</i>"
         )
+        await bot.send_message(game.chat_id, winner_banner)
     else:
         database.record_game_finish(0, "None", participants)
-        await bot.send_message(game.chat_id, "🏆 <b>GAME OVER</b> — No survivors remaining!")
+        draw_banner = (
+            "💀 ═══════════════════════ 💀\n"
+            "           ⚔️ <b>GAME OVER</b> ⚔️\n"
+            "💀 ═══════════════════════ 💀\n\n"
+            "🚫 <b>No Survivors!</b> Sabhi players eliminate ho gaye.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🎮 <i>Naya match shuru karne ke liye /start ya /deck chalayein.</i>"
+        )
+        await bot.send_message(game.chat_id, draw_banner)
 
     if game.chat_id in GAMES:
         del GAMES[game.chat_id]
@@ -576,7 +603,6 @@ async def cmd_endgame(message: Message):
 
         user_id = message.from_user.id
 
-        # FIX: Agar game sirf LOBBY stage me hai aur start nahi hua, toh koi bhi close kar sake
         if game.status == "LOBBY":
             cancel_timer(game)
             del GAMES[chat_id]
@@ -584,7 +610,6 @@ async def cmd_endgame(message: Message):
             await message.answer(f"🚪 <b>Lobby Closed!</b> {h_tag} dwara banayi gayi lobby close kar di gayi hai.")
             return
 
-        # Ongoing match me active player restriction
         if user_id not in game.players or not game.players[user_id].is_active:
             await message.reply("❌ Sirf game ke active players hi ongoing match ko end kar sakte hain.")
             return
@@ -772,7 +797,6 @@ async def handle_hub(callback: CallbackQuery):
             room.players[host.user_id] = host
             GAMES[chat_id] = room
 
-            # 3-minute lobby auto-expiry timer schedule
             cancel_timer(room)
             room.active_timer_task = asyncio.create_task(run_lobby_inactivity_timer(chat_id))
 
@@ -850,7 +874,6 @@ async def handle_lobby(callback: CallbackQuery):
                 await bot.send_message(chat_id, f"❌ Kam se kam {config.MIN_PLAYERS} players hone chahiye start karne ke liye.")
                 return
 
-            # Lobby auto-expiry timer cancel karo
             cancel_timer(room)
 
             room.status = "IN_PROGRESS"
@@ -897,7 +920,21 @@ async def handle_turn(callback: CallbackQuery):
         current.warning_count = 0
         gc_link = get_chat_link(chat_id)
 
-        if action == "pass":
+        # 1. Skip / Pass Confirmation Prompt
+        if action == "pass_confirm":
+            header = turn_ui.render_dm_cards_header(current.cards, game.table_cards)
+            await callback.message.edit_text(
+                f"{header}⚠️ <b>Kya aap sach me apni turn PASS / SKIP karna chahte hain?</b>",
+                reply_markup=turn_ui.get_action_confirmation_markup(chat_id, "pass")
+            )
+
+        # 2. Skip / Pass Confirmed Action
+        elif action == "pass_yes":
+            # Agar player ke paas 31 hai aur wo pass confirm karta hai, turant 31 declare
+            if calculate_hand_score(current.cards) == 31.0:
+                await handle_31_call(game, current)
+                return
+
             database.update_stat(current.user_id, current.name, "passes")
             msg_text = turn_ui.render_move_locked_in(current.cards, "You passed your turn.")
             await callback.message.edit_text(msg_text, reply_markup=turn_ui.get_back_to_group_markup(gc_link))
@@ -983,6 +1020,11 @@ async def handle_turn(callback: CallbackQuery):
             )
 
         elif action == "call_yes":
+            # Agar player ke paas 31 hai aur wo call dabaye, turant 31 declare
+            if calculate_hand_score(current.cards) == 31.0:
+                await handle_31_call(game, current)
+                return
+
             if game.caller_id is not None:
                 await callback.answer("🔒 CALL pehle hi ho chuka hai!", show_alert=True)
                 return
@@ -997,8 +1039,11 @@ async def handle_turn(callback: CallbackQuery):
 
         elif action == "back":
             call_locked = (game.caller_id is not None)
+            has_31 = (calculate_hand_score(current.cards) == 31.0)
             text = turn_ui.render_dm_hand_view(current.cards, game.table_cards)
-            markup = turn_ui.get_dm_turn_buttons(chat_id, is_call_locked=call_locked)
+            if has_31:
+                text += "\n\n⚡ <b>PERFECT SCORE 31!</b>\nExchange lock ho chuka hai. <b>CALL</b> ya <b>PASS</b> dabakar round declare karein."
+            markup = turn_ui.get_dm_turn_buttons(chat_id, is_call_locked=call_locked, has_31=has_31)
             await callback.message.edit_text(text, reply_markup=markup)
 
 # --- DUMMY WEB SERVER (RENDER FREE WEB SERVICE PORT SUPPORT) ---
@@ -1035,9 +1080,7 @@ async def main():
     ]
     await bot.set_my_commands(commands)
 
-    # Render health-check web server start
     await start_dummy_server()
-
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot, polling_timeout=15)
 
