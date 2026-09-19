@@ -11,11 +11,12 @@ def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # 1. Existing Call 31 Stats Table
+    # 1. Call 31 Stats Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS call31_stats (
             user_id BIGINT PRIMARY KEY,
             name TEXT,
+            username TEXT,
             games INT DEFAULT 0,
             wins INT DEFAULT 0,
             round_wins INT DEFAULT 0,
@@ -33,14 +34,15 @@ def init_db():
         );
     """)
 
-    # Safe column migration agar purani table me joint_wins na ho
-    cursor.execute("""
-        SELECT column_name 
-        FROM information_schema.columns 
-        WHERE table_name = 'call31_stats' AND column_name = 'joint_wins';
-    """)
-    if not cursor.fetchone():
-        cursor.execute("ALTER TABLE call31_stats ADD COLUMN joint_wins INT DEFAULT 0;")
+    # Safe column migrations
+    for col_name, col_def in [("joint_wins", "INT DEFAULT 0"), ("username", "TEXT")]:
+        cursor.execute(f"""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'call31_stats' AND column_name = '{col_name}';
+        """)
+        if not cursor.fetchone():
+            cursor.execute(f"ALTER TABLE call31_stats ADD COLUMN {col_name} {col_def};")
 
     # 2. Bot Admins Table (For /addadmin, /removeadmin, /admins)
     cursor.execute("""
@@ -93,6 +95,36 @@ def init_db():
     conn.close()
 
 # ━━━━━━━━━━━━━━━━━━━━
+# IDENTIFIER SEARCH HELPER
+# ━━━━━━━━━━━━━━━━━━━━
+
+def sync_get_player_by_identifier(identifier: str) -> Optional[Dict[str, Any]]:
+    clean_id = str(identifier).strip().lstrip("@")
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+    # 1. Agar numeric ID hai
+    if clean_id.isdigit():
+        cursor.execute("SELECT * FROM call31_stats WHERE user_id = %s;", (int(clean_id),))
+        row = cursor.fetchone()
+        if row:
+            cursor.close()
+            conn.close()
+            return dict(row)
+
+    # 2. Case-insensitive search on username ya name
+    cursor.execute("""
+        SELECT * FROM call31_stats 
+        WHERE LOWER(COALESCE(username, '')) = LOWER(%s) 
+           OR LOWER(name) = LOWER(%s)
+        LIMIT 1;
+    """, (clean_id, clean_id))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return dict(row) if row else None
+
+# ━━━━━━━━━━━━━━━━━━━━
 # ADMIN & ROLE MANAGEMENT HELPERS
 # ━━━━━━━━━━━━━━━━━━━━
 
@@ -117,7 +149,7 @@ def add_admin(user_id: int, username: str, added_by: int) -> bool:
         INSERT INTO bot_admins (user_id, username, added_by)
         VALUES (%s, %s, %s)
         ON CONFLICT (user_id) DO UPDATE SET username = EXCLUDED.username;
-    """, (user_id, username, added_by))
+    """, (user_id, username.lstrip("@") if username else None, added_by))
     conn.commit()
     cursor.close()
     conn.close()
@@ -235,9 +267,9 @@ def get_all_registered_users() -> List[int]:
 
 def set_player_single_stat(user_id: int, stat_key: str, new_value: int):
     allowed_fields = {
-        "games", "wins", "joint_wins", "rounds_survived", 
-        "exact_31", "exact_30_5", "best_streak", 
-        "ex_1", "ex_all", "passes", "lives_lost"
+        "games", "wins", "round_wins", "rounds_survived", 
+        "exact_31", "exact_30_5", "current_streak", "best_streak", 
+        "ex_1", "ex_all", "calls", "passes", "lives_lost", "joint_wins"
     }
     if stat_key not in allowed_fields:
         return
@@ -256,18 +288,24 @@ def set_player_all_stats(user_id: int, stats: Dict[str, int]):
             games = %s,
             wins = %s,
             joint_wins = %s,
+            round_wins = %s,
             rounds_survived = %s,
             exact_31 = %s,
             exact_30_5 = %s,
+            current_streak = %s,
             best_streak = %s,
             ex_1 = %s,
+            ex_all = %s,
+            calls = %s,
             passes = %s,
             lives_lost = %s
         WHERE user_id = %s;
     """, (
-        stats["games"], stats["wins"], stats["joint_wins"], stats["rounds_survived"],
-        stats["exact_31"], stats["exact_30_5"], stats["best_streak"], stats["ex_1"],
-        stats["passes"], stats["lives_lost"], user_id
+        stats["games"], stats["wins"], stats["joint_wins"], stats["round_wins"],
+        stats["rounds_survived"], stats["exact_31"], stats["exact_30_5"],
+        stats["current_streak"], stats["best_streak"], stats["ex_1"],
+        stats["ex_all"], stats["calls"], stats["passes"], stats["lives_lost"],
+        user_id
     ))
     conn.commit()
     cursor.close()
@@ -333,10 +371,10 @@ def get_overall_bot_metrics() -> Dict[str, Any]:
     }
 
 # ━━━━━━━━━━━━━━━━━━━━
-# EXISTING GAMEPLAY FUNCTIONS (UNTOUCHED)
+# GAMEPLAY HELPERS (WITH USERNAME SYNC)
 # ━━━━━━━━━━━━━━━━━━━━
 
-def update_stat(user_id: int, name: str, field: str, amount: int = 1):
+def update_stat(user_id: int, name: str, field: str, amount: int = 1, username: str = None):
     allowed_fields = {
         "games", "wins", "round_wins", "rounds_survived", 
         "exact_31", "exact_30_5", "current_streak", "best_streak", 
@@ -348,10 +386,12 @@ def update_stat(user_id: int, name: str, field: str, amount: int = 1):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO call31_stats (user_id, name)
-        VALUES (%s, %s)
-        ON CONFLICT(user_id) DO UPDATE SET name = EXCLUDED.name;
-    """, (user_id, name))
+        INSERT INTO call31_stats (user_id, name, username)
+        VALUES (%s, %s, %s)
+        ON CONFLICT(user_id) DO UPDATE 
+        SET name = EXCLUDED.name,
+            username = COALESCE(EXCLUDED.username, call31_stats.username);
+    """, (user_id, name, username.lstrip("@") if username else None))
     
     cursor.execute(f"""
         UPDATE call31_stats 
