@@ -133,7 +133,7 @@ def get_dm_turn_buttons(chat_id: int, is_call_locked: bool = False, has_31: bool
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Exchange 1 Card", callback_data=f"turn:ex1:{chat_id}")],
         [InlineKeyboardButton(text="🔁 Exchange All", callback_data=f"turn:exall_confirm:{chat_id}")],
-        [InlineKeyboardButton(text="⏭️ Pass / Skip", callback_data=f"turn:pass_confirm:{chat_id}")]
+        [InlineKeyboardButton(text="⏭️ Pass / Skip", callback_data=f"turn:pass_confirm:{chat_id}")],
         [call_btn]
     ])
 
