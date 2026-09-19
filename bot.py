@@ -5,9 +5,9 @@ import random
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
+from aiogram.enums import ParseMode, ChatMemberStatus
+from aiogram.filters import Command, ChatMemberUpdatedFilter, KICKED, LEFT, MEMBER, ADMINISTRATOR
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, ChatMemberUpdated
 
 import config
 from cards_and_scoring import Card, calculate_hand_score, format_score
@@ -15,6 +15,7 @@ from game_state import GameRoom, Player, GAMES, get_game_lock, start_new_round
 import menu
 import turn_ui
 import database
+from admin import admin_router
 
 logging.basicConfig(level=logging.INFO)
 
@@ -25,6 +26,7 @@ bot = Bot(
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
 )
 dp = Dispatcher()
+dp.include_router(admin_router)
 
 def get_chat_link(chat_id: int) -> str:
     clean_id = str(chat_id).replace("-100", "")
@@ -400,6 +402,90 @@ async def end_game(game: GameRoom):
     if game.chat_id in GAMES:
         del GAMES[game.chat_id]
 
+# ━━━━━━━━━━━━━━━━━━━━
+# BOT ADDED / REMOVED TO GROUP HANDLERS
+# ━━━━━━━━━━━━━━━━━━━━
+
+@dp.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=MEMBER | ADMINISTRATOR))
+async def bot_added_to_chat(event: ChatMemberUpdated):
+    if event.chat.type in ("group", "supergroup"):
+        title = event.chat.title or "Unknown Arena"
+        chat_id = event.chat.id
+        link = event.chat.invite_link or "Private Arena"
+        added_by_user = event.from_user
+
+        added_name = added_by_user.full_name if added_by_user else "Unavailable"
+        added_uname = f"@{added_by_user.username}" if added_by_user and added_by_user.username else "Unavailable"
+        added_id = str(added_by_user.id) if added_by_user else "Unavailable"
+
+        creator_info = "Unavailable"
+        try:
+            admins = await bot.get_chat_administrators(chat_id)
+            for adm in admins:
+                if adm.status == ChatMemberStatus.CREATOR:
+                    u = adm.user
+                    u_tag = f"@{u.username}" if u.username else "N/A"
+                    creator_info = f"{u.full_name} ({u_tag}) | ID: {u.id}"
+                    break
+        except Exception:
+            pass
+
+        database.register_group(chat_id, title, event.chat.invite_link, added_by_user.id if added_by_user else None)
+
+        notify_text = (
+            "➕ <b>BOT ADDED TO ARENA</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🏟️ <b>GROUP</b>\n"
+            f"• Title : <b>{title}</b>\n"
+            f"• ID    : <code>{chat_id}</code>\n"
+            f"• Link  : {link}\n\n"
+            "👤 <b>ADDED BY</b>\n"
+            f"• Name  : <b>{added_name}</b>\n"
+            f"• User  : {added_uname}\n"
+            f"• ID    : <code>{added_id}</code>\n\n"
+            "👑 <b>GROUP CREATOR</b>\n"
+            f"• {creator_info}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🟢 Group Registered"
+        )
+        try:
+            await bot.send_message(config.OWNER_ID, notify_text)
+        except Exception:
+            pass
+
+@dp.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=KICKED | LEFT))
+async def bot_removed_from_chat(event: ChatMemberUpdated):
+    if event.chat.type in ("group", "supergroup"):
+        title = event.chat.title or "Unknown Arena"
+        chat_id = event.chat.id
+        link = event.chat.invite_link or "Private Arena"
+        rem_user = event.from_user
+
+        rem_name = rem_user.full_name if rem_user else "Unavailable"
+        rem_uname = f"@{rem_user.username}" if rem_user and rem_user.username else "Unavailable"
+        rem_id = str(rem_user.id) if rem_user else "Unavailable"
+
+        database.unregister_group(chat_id)
+
+        notify_text = (
+            "➖ <b>BOT REMOVED FROM ARENA</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🏟️ <b>GROUP</b>\n"
+            f"• Title : <b>{title}</b>\n"
+            f"• ID    : <code>{chat_id}</code>\n"
+            f"• Link  : {link}\n\n"
+            "👤 <b>REMOVED BY</b>\n"
+            f"• Name : <b>{rem_name}</b>\n"
+            f"• User : {rem_uname}\n"
+            f"• ID   : <code>{rem_id}</code>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🔴 Group Unregistered"
+        )
+        try:
+            await bot.send_message(config.OWNER_ID, notify_text)
+        except Exception:
+            pass
+
 # --- COMMAND HANDLERS ---
 
 @dp.message(Command("start"))
@@ -411,6 +497,7 @@ async def handle_start(message: Message):
         )
         return
 
+    database.register_group(message.chat.id, message.chat.title or "Arena", None, message.from_user.id)
     await message.reply(
         "🎮 <b>CHOOSE A GAME TO START:</b>", 
         reply_markup=turn_ui.get_play_games_markup(message.chat.id)
@@ -422,6 +509,7 @@ async def cmd_deck(message: Message):
         await message.reply("🎮 <b>Deck Games Hub:</b> Run /start or /deck inside a group!")
         return
 
+    database.register_group(message.chat.id, message.chat.title or "Arena", None, message.from_user.id)
     text = menu.render_hub_welcome(message.chat.title or "Group")
     markup = menu.get_game_categories_markup(message.chat.id)
     await message.answer(text, reply_markup=markup)
@@ -794,6 +882,15 @@ async def handle_hub(callback: CallbackQuery):
 
     if action == "launch_31":
         chat_id = int(parts[2])
+
+        # Maintenance check
+        if database.get_maintenance_status():
+            await callback.answer(
+                "⚙️ MAINTENANCE MODE: Deck Play is currently under maintenance. New matches cannot be started.",
+                show_alert=True
+            )
+            return
+
         async with get_game_lock(chat_id):
             if chat_id in GAMES and GAMES[chat_id].status != "ENDED":
                 active_game = GAMES[chat_id]
