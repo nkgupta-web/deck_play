@@ -767,29 +767,47 @@ async def handle_remove_vote(callback: CallbackQuery):
     async with get_game_lock(chat_id):
         game = GAMES.get(chat_id)
         if not game or game.status != "IN_PROGRESS":
-            await callback.answer("Game is no longer active.", show_alert=True)
+            try:
+                await callback.answer("Game is no longer active.", show_alert=True)
+            except Exception:
+                pass
             return
 
         if target_id not in game.active_remove_votes:
-            await callback.answer("This removal poll has expired.", show_alert=True)
+            try:
+                await callback.answer("This removal poll has expired.", show_alert=True)
+            except Exception:
+                pass
             return
 
         if voter_id == target_id:
-            await callback.answer("❌ You cannot vote against yourself!", show_alert=True)
+            try:
+                await callback.answer("❌ You cannot vote against yourself!", show_alert=True)
+            except Exception:
+                pass
             return
 
         voter = game.players.get(voter_id)
         if not voter or not voter.is_active or voter.lives <= 0:
-            await callback.answer("❌ Only active players can vote!", show_alert=True)
+            try:
+                await callback.answer("❌ Only active players can vote!", show_alert=True)
+            except Exception:
+                pass
             return
 
         votes_set = game.active_remove_votes[target_id]
         if voter_id in votes_set:
-            await callback.answer("You have already voted!", show_alert=True)
+            try:
+                await callback.answer("You have already voted!", show_alert=True)
+            except Exception:
+                pass
             return
 
         votes_set.add(voter_id)
-        await callback.answer("Vote counted!")
+        try:
+            await callback.answer("Vote counted!")
+        except Exception:
+            pass
 
         if len(votes_set) >= 2:
             del game.active_remove_votes[target_id]
@@ -803,7 +821,10 @@ async def handle_remove_vote(callback: CallbackQuery):
                     target.cards.clear()
 
                 tag = f"<a href='tg://user?id={target.user_id}'>{target.name}</a>"
-                await callback.message.edit_text(f"🚫 <b>VOTE PASSED!</b> {tag} has been removed from the match.")
+                try:
+                    await callback.message.edit_text(f"🚫 <b>VOTE PASSED!</b> {tag} has been removed from the match.")
+                except Exception as e:
+                    logging.warning(f"Error editing vote message: {e}")
 
                 await check_and_announce_host(game)
 
@@ -823,29 +844,47 @@ async def handle_endgame_vote(callback: CallbackQuery):
     async with get_game_lock(chat_id):
         game = GAMES.get(chat_id)
         if not game or game.status != "IN_PROGRESS":
-            await callback.answer("Game is no longer active.", show_alert=True)
+            try:
+                await callback.answer("Game is no longer active.", show_alert=True)
+            except Exception:
+                pass
             return
 
         voter = game.players.get(voter_id)
         if not voter or not voter.is_active or voter.lives <= 0:
-            await callback.answer("❌ Only active players can vote!", show_alert=True)
+            try:
+                await callback.answer("❌ Only active players can vote!", show_alert=True)
+            except Exception:
+                pass
             return
 
         if voter_id in game.endgame_votes:
-            await callback.answer("You have already voted!", show_alert=True)
+            try:
+                await callback.answer("You have already voted!", show_alert=True)
+            except Exception:
+                pass
             return
 
         game.endgame_votes.add(voter_id)
-        await callback.answer("Vote counted!")
+        try:
+            await callback.answer("Vote counted!")
+        except Exception:
+            pass
 
         if len(game.endgame_votes) >= 2:
             cancel_timer(game)
             del GAMES[chat_id]
-            await callback.message.edit_text("🛑 <b>VOTE PASSED:</b> The match has been ended by player consensus.")
+            try:
+                await callback.message.edit_text("🛑 <b>VOTE PASSED:</b> The match has been ended by player consensus.")
+            except Exception as e:
+                logging.warning(f"Error editing endgame vote text: {e}")
 
 @dp.callback_query(F.data.startswith("hub_sel:"))
 async def handle_hub_selection(callback: CallbackQuery):
-    await callback.answer()
+    try:
+        await callback.answer()
+    except Exception:
+        pass
     parts = callback.data.split(":")
     cat = parts[1]
     game_type = parts[2]
@@ -864,19 +903,31 @@ async def handle_hub_selection(callback: CallbackQuery):
         back_markup = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Back to Selection", callback_data=f"hub_back:{cat}")]
         ])
-        await callback.message.edit_text(text, reply_markup=back_markup)
+        try:
+            await callback.message.edit_text(text, reply_markup=back_markup)
+        except Exception as e:
+            logging.warning(f"Error editing hub selection text: {e}")
 
 @dp.callback_query(F.data.startswith("hub_back:"))
 async def handle_hub_back(callback: CallbackQuery):
-    await callback.answer()
+    try:
+        await callback.answer()
+    except Exception:
+        pass
     cat = callback.data.split(":")[1]
     markup = turn_ui.get_hub_selection_markup(cat)
     title = "STATS HUB" if cat == "profile" else ("LEADERBOARDS" if cat == "leaderboard" else "RULES GUIDE")
-    await callback.message.edit_text(f"📊 <b>{title}</b>\nSelect a game:", reply_markup=markup)
+    try:
+        await callback.message.edit_text(f"📊 <b>{title}</b>\nSelect a game:", reply_markup=markup)
+    except Exception as e:
+        logging.warning(f"Error editing hub back text: {e}")
 
 @dp.callback_query(F.data.startswith("hub:"))
 async def handle_hub(callback: CallbackQuery):
-    await callback.answer()
+    try:
+        await callback.answer()
+    except Exception:
+        pass
     parts = callback.data.split(":")
     action = parts[1]
 
@@ -885,10 +936,13 @@ async def handle_hub(callback: CallbackQuery):
 
         # Maintenance check
         if database.get_maintenance_status():
-            await callback.answer(
-                "⚙️ MAINTENANCE MODE: Deck Play is currently under maintenance. New matches cannot be started.",
-                show_alert=True
-            )
+            try:
+                await callback.answer(
+                    "⚙️ MAINTENANCE MODE: Deck Play is currently under maintenance. New matches cannot be started.",
+                    show_alert=True
+                )
+            except Exception:
+                pass
             return
 
         async with get_game_lock(chat_id):
@@ -928,25 +982,37 @@ async def handle_hub(callback: CallbackQuery):
             cancel_timer(room)
             room.active_timer_task = asyncio.create_task(run_lobby_inactivity_timer(chat_id))
 
-            await callback.message.edit_text(
-                turn_ui.render_lobby_view(room),
-                reply_markup=turn_ui.get_lobby_markup(chat_id, config.BOT_USERNAME)
-            )
+            try:
+                await callback.message.edit_text(
+                    turn_ui.render_lobby_view(room),
+                    reply_markup=turn_ui.get_lobby_markup(chat_id, config.BOT_USERNAME)
+                )
+            except Exception as e:
+                logging.warning(f"Error editing lobby view: {e}")
 
     elif action == "coming_soon":
-        await callback.answer("This game mode will be available in an upcoming update!", show_alert=True)
+        try:
+            await callback.answer("This game mode will be available in an upcoming update!", show_alert=True)
+        except Exception:
+            pass
 
     elif action == "rules":
-        await callback.message.edit_text(
-            turn_ui.render_call31_rules(),
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Back", callback_data="hub_back:rules")]
-            ])
-        )
+        try:
+            await callback.message.edit_text(
+                turn_ui.render_call31_rules(),
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Back", callback_data="hub_back:rules")]
+                ])
+            )
+        except Exception as e:
+            logging.warning(f"Error editing rules text: {e}")
 
 @dp.callback_query(F.data.startswith("lobby:"))
 async def handle_lobby(callback: CallbackQuery):
-    await callback.answer()
+    try:
+        await callback.answer()
+    except Exception:
+        pass
     parts = callback.data.split(":")
     action = parts[1]
     chat_id = int(parts[2])
@@ -969,10 +1035,13 @@ async def handle_lobby(callback: CallbackQuery):
                 name=callback.from_user.full_name,
                 username=callback.from_user.username
             )
-            await callback.message.edit_text(
-                turn_ui.render_lobby_view(room),
-                reply_markup=turn_ui.get_lobby_markup(chat_id, config.BOT_USERNAME)
-            )
+            try:
+                await callback.message.edit_text(
+                    turn_ui.render_lobby_view(room),
+                    reply_markup=turn_ui.get_lobby_markup(chat_id, config.BOT_USERNAME)
+                )
+            except Exception as e:
+                logging.warning(f"Error editing lobby on join: {e}")
 
         elif action == "leave":
             if user_id not in room.players:
@@ -987,13 +1056,19 @@ async def handle_lobby(callback: CallbackQuery):
                 else:
                     cancel_timer(room)
                     del GAMES[chat_id]
-                    await callback.message.edit_text("🚪 Lobby closed as all players left.")
+                    try:
+                        await callback.message.edit_text("🚪 Lobby closed as all players left.")
+                    except Exception:
+                        pass
                     return
 
-            await callback.message.edit_text(
-                turn_ui.render_lobby_view(room),
-                reply_markup=turn_ui.get_lobby_markup(chat_id, config.BOT_USERNAME)
-            )
+            try:
+                await callback.message.edit_text(
+                    turn_ui.render_lobby_view(room),
+                    reply_markup=turn_ui.get_lobby_markup(chat_id, config.BOT_USERNAME)
+                )
+            except Exception as e:
+                logging.warning(f"Error editing lobby on leave: {e}")
 
         elif action == "start":
             if user_id != room.host_id:
@@ -1007,7 +1082,10 @@ async def handle_lobby(callback: CallbackQuery):
             room.status = "IN_PROGRESS"
             start_new_round(room)
 
-            await callback.message.edit_text("🚀 <b>Game Starting! Dealing cards...</b>")
+            try:
+                await callback.message.edit_text("🚀 <b>Game Starting! Dealing cards...</b>")
+            except Exception:
+                pass
 
             await bot.send_message(
                 room.chat_id,
@@ -1030,11 +1108,17 @@ async def handle_turn(callback: CallbackQuery):
             caller = game.players.get(game.caller_id)
             if caller:
                 caller_name = caller.name
-        await callback.answer(f"🔒 Call is locked! {caller_name} has already called.", show_alert=True)
+        try:
+            await callback.answer(f"🔒 Call is locked! {caller_name} has already called.", show_alert=True)
+        except Exception:
+            pass
         return
 
     chat_id = int(parts[2])
-    await callback.answer()
+    try:
+        await callback.answer()
+    except Exception:
+        pass
 
     async with get_game_lock(chat_id):
         game = GAMES.get(chat_id)
@@ -1051,10 +1135,13 @@ async def handle_turn(callback: CallbackQuery):
         # 1. Skip / Pass Confirmation Prompt
         if action == "pass_confirm":
             header = turn_ui.render_dm_cards_header(current.cards, game.table_cards)
-            await callback.message.edit_text(
-                f"{header}⚠️ <b>Are you sure you want to PASS / SKIP your turn?</b>",
-                reply_markup=turn_ui.get_action_confirmation_markup(chat_id, "pass")
-            )
+            try:
+                await callback.message.edit_text(
+                    f"{header}⚠️ <b>Are you sure you want to PASS / SKIP your turn?</b>",
+                    reply_markup=turn_ui.get_action_confirmation_markup(chat_id, "pass")
+                )
+            except Exception as e:
+                logging.warning(f"Turn UI edit error (pass_confirm): {e}")
 
         # 2. Skip / Pass Confirmed Action
         elif action == "pass_yes":
@@ -1064,25 +1151,34 @@ async def handle_turn(callback: CallbackQuery):
 
             database.update_stat(current.user_id, current.name, "passes")
             msg_text = turn_ui.render_move_locked_in(current.cards, "You passed your turn.")
-            await callback.message.edit_text(msg_text, reply_markup=turn_ui.get_back_to_group_markup(gc_link))
+            try:
+                await callback.message.edit_text(msg_text, reply_markup=turn_ui.get_back_to_group_markup(gc_link))
+            except Exception as e:
+                logging.warning(f"Turn UI edit error (pass_yes): {e}")
             await advance_turn(game, passed=True, last_action=f"{current.name} passed their turn")
 
         elif action == "ex1":
             header = turn_ui.render_dm_cards_header(current.cards, game.table_cards)
-            await callback.message.edit_text(
-                f"{header}👇 <b>Select 1 card from your hand to exchange:</b>",
-                reply_markup=turn_ui.get_exchange_step1_markup(chat_id, current)
-            )
+            try:
+                await callback.message.edit_text(
+                    f"{header}👇 <b>Select 1 card from your hand to exchange:</b>",
+                    reply_markup=turn_ui.get_exchange_step1_markup(chat_id, current)
+                )
+            except Exception as e:
+                logging.warning(f"Turn UI edit error (ex1): {e}")
 
         elif action == "swap_h":
             hand_card_id = parts[3]
             selected_c = Card.from_id(hand_card_id)
             header = turn_ui.render_dm_cards_header(current.cards, game.table_cards)
-            await callback.message.edit_text(
-                f"{header}Selected: <b>[{selected_c.suit.value} {selected_c.rank}]</b>\n\n"
-                "👇 <b>Select a card from the table to take:</b>",
-                reply_markup=turn_ui.get_exchange_step2_markup(chat_id, game.table_cards, hand_card_id)
-            )
+            try:
+                await callback.message.edit_text(
+                    f"{header}Selected: <b>[{selected_c.suit.value} {selected_c.rank}]</b>\n\n"
+                    "👇 <b>Select a card from the table to take:</b>",
+                    reply_markup=turn_ui.get_exchange_step2_markup(chat_id, game.table_cards, hand_card_id)
+                )
+            except Exception as e:
+                logging.warning(f"Turn UI edit error (swap_h): {e}")
 
         elif action == "swap_t":
             hand_card_id = parts[3]
@@ -1103,7 +1199,12 @@ async def handle_turn(callback: CallbackQuery):
 
             action_desc = f"{current.name} exchanged [{h_card.suit.value}{h_card.rank}] for [{t_card.suit.value}{t_card.rank}]"
             msg_text = turn_ui.render_move_locked_in(current.cards, f"Exchanged [{h_card.suit.value}{h_card.rank}] for [{t_card.suit.value}{t_card.rank}]")
-            await callback.message.edit_text(msg_text, reply_markup=turn_ui.get_back_to_group_markup(gc_link))
+            
+            # Catch network disconnects gracefully
+            try:
+                await callback.message.edit_text(msg_text, reply_markup=turn_ui.get_back_to_group_markup(gc_link))
+            except Exception as e:
+                logging.warning(f"Turn UI edit error (swap_t): {e}")
 
             if calculate_hand_score(current.cards) == 31.0:
                 await handle_31_call(game, current)
@@ -1113,10 +1214,13 @@ async def handle_turn(callback: CallbackQuery):
 
         elif action == "exall_confirm":
             header = turn_ui.render_dm_cards_header(current.cards, game.table_cards)
-            await callback.message.edit_text(
-                f"{header}⚠️ <b>Exchange all 3 cards with the table?</b>",
-                reply_markup=turn_ui.get_action_confirmation_markup(chat_id, "exall")
-            )
+            try:
+                await callback.message.edit_text(
+                    f"{header}⚠️ <b>Exchange all 3 cards with the table?</b>",
+                    reply_markup=turn_ui.get_action_confirmation_markup(chat_id, "exall")
+                )
+            except Exception as e:
+                logging.warning(f"Turn UI edit error (exall_confirm): {e}")
 
         elif action == "exall_yes":
             old_h = list(current.cards)
@@ -1127,7 +1231,10 @@ async def handle_turn(callback: CallbackQuery):
 
             action_desc = f"{current.name} exchanged all 3 cards with the table"
             msg_text = turn_ui.render_move_locked_in(current.cards, "Exchanged all 3 cards with the table.")
-            await callback.message.edit_text(msg_text, reply_markup=turn_ui.get_back_to_group_markup(gc_link))
+            try:
+                await callback.message.edit_text(msg_text, reply_markup=turn_ui.get_back_to_group_markup(gc_link))
+            except Exception as e:
+                logging.warning(f"Turn UI edit error (exall_yes): {e}")
 
             if calculate_hand_score(current.cards) == 31.0:
                 await handle_31_call(game, current)
@@ -1137,14 +1244,20 @@ async def handle_turn(callback: CallbackQuery):
 
         elif action == "call_confirm":
             if game.caller_id is not None:
-                await callback.answer("🔒 A Call has already been made!", show_alert=True)
+                try:
+                    await callback.answer("🔒 A Call has already been made!", show_alert=True)
+                except Exception:
+                    pass
                 return
 
             header = turn_ui.render_dm_cards_header(current.cards, game.table_cards)
-            await callback.message.edit_text(
-                f"{header}⚡ <b>Are you sure you want to CALL?</b>\nYour hand will lock and all other players get ONE final turn.",
-                reply_markup=turn_ui.get_action_confirmation_markup(chat_id, "call")
-            )
+            try:
+                await callback.message.edit_text(
+                    f"{header}⚡ <b>Are you sure you want to CALL?</b>\nYour hand will lock and all other players get ONE final turn.",
+                    reply_markup=turn_ui.get_action_confirmation_markup(chat_id, "call")
+                )
+            except Exception as e:
+                logging.warning(f"Turn UI edit error (call_confirm): {e}")
 
         elif action == "call_yes":
             if calculate_hand_score(current.cards) == 31.0:
@@ -1152,14 +1265,21 @@ async def handle_turn(callback: CallbackQuery):
                 return
 
             if game.caller_id is not None:
-                await callback.answer("🔒 A Call has already been made!", show_alert=True)
+                try:
+                    await callback.answer("🔒 A Call has already been made!", show_alert=True)
+                except Exception:
+                    pass
                 return
 
             game.caller_id = current.user_id
             database.update_stat(current.user_id, current.name, "calls")
 
             msg_text = turn_ui.render_move_locked_in(current.cards, "You called! Hand is locked.")
-            await callback.message.edit_text(msg_text, reply_markup=turn_ui.get_back_to_group_markup(gc_link))
+            try:
+                await callback.message.edit_text(msg_text, reply_markup=turn_ui.get_back_to_group_markup(gc_link))
+            except Exception as e:
+                logging.warning(f"Turn UI edit error (call_yes): {e}")
+
             action_desc = f"{current.name} called! Final turns commence."
             await advance_turn(game, passed=False, last_action=action_desc)
 
@@ -1170,7 +1290,10 @@ async def handle_turn(callback: CallbackQuery):
             if has_31:
                 text += "\n\n⚡ <b>PERFECT SCORE 31!</b>\nCard swaps are locked. Press <b>CALL HAND</b> or <b>PASS</b> to declare the round."
             markup = turn_ui.get_dm_turn_buttons(chat_id, is_call_locked=call_locked, has_31=has_31)
-            await callback.message.edit_text(text, reply_markup=markup)
+            try:
+                await callback.message.edit_text(text, reply_markup=markup)
+            except Exception as e:
+                logging.warning(f"Turn UI edit error (back): {e}")
 
 # --- DUMMY WEB SERVER (RENDER FREE WEB SERVICE PORT SUPPORT) ---
 
